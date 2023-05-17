@@ -1,9 +1,10 @@
 import sys
+import os
 import re
 import subprocess
 import glob
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QLabel, QComboBox, QLineEdit, QRadioButton, QSlider, QProgressBar
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths
 import ffmpeg
 
 
@@ -31,6 +32,23 @@ class EncoderThread(QThread):
         process.wait()
 
 
+class DnDLineEdit(QLineEdit):
+    file_dropped = pyqtSignal(str)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        url = event.mimeData().urls()[0].toLocalFile()
+        self.setText(url)
+        self.file_dropped.emit(url)
+
+
 class FFmpegGUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -43,18 +61,24 @@ class FFmpegGUI(QWidget):
         layout = QVBoxLayout()
 
         layout.addWidget(QLabel('Video or Image Sequence'))
-        self.video_input = QLineEdit()
+        self.video_input = DnDLineEdit()
+        self.video_input.file_dropped.connect(self.select_video)
+        self.video_input.editingFinished.connect(
+            lambda: self.select_video(self.video_input.text()))
         self.video_button = QPushButton('Browse')
-        self.video_button.clicked.connect(self.select_video)
+        self.video_button.clicked.connect(lambda: self.select_video())
         video_layout = QHBoxLayout()
         video_layout.addWidget(self.video_input)
         video_layout.addWidget(self.video_button)
         layout.addLayout(video_layout)
 
-        layout.addWidget(QLabel('Alternative Audio Source (optional)'))
-        self.audio_input = QLineEdit()
+        layout.addWidget(QLabel('Audio Source (optional)'))
+        self.audio_input = DnDLineEdit()
+        self.audio_input.file_dropped.connect(self.select_audio)
+        self.audio_input.editingFinished.connect(
+            lambda: self.select_audio(self.audio_input.text()))
         self.audio_button = QPushButton('Browse')
-        self.audio_button.clicked.connect(self.select_audio)
+        self.audio_button.clicked.connect(lambda: self.select_audio())
         audio_layout = QHBoxLayout()
         audio_layout.addWidget(self.audio_input)
         audio_layout.addWidget(self.audio_button)
@@ -83,6 +107,18 @@ class FFmpegGUI(QWidget):
         layout.addWidget(self.crf_slider)
         self.update_crf_label(self.crf_slider.value())
 
+        layout.addWidget(QLabel('Output Folder'))
+        self.output_folder_input = QLineEdit()
+        self.output_button = QPushButton('Browse')
+        self.output_button.clicked.connect(self.select_output_folder)
+        output_layout = QHBoxLayout()
+        output_layout.addWidget(self.output_folder_input)
+        output_layout.addWidget(self.output_button)
+        layout.addLayout(output_layout)
+        default_output_folder = QStandardPaths.writableLocation(
+            QStandardPaths.DocumentsLocation)
+        self.output_folder_input.setText(default_output_folder)
+
         self.encode_button = QPushButton('Encode')
         self.encode_button.clicked.connect(self.encode_video)
         layout.addWidget(self.encode_button)
@@ -95,15 +131,26 @@ class FFmpegGUI(QWidget):
     def update_crf_label(self, value):
         self.crf_label.setText(f"Quality (CRF): {value}")
 
-    def select_video(self):
-        video_file, _ = QFileDialog.getOpenFileName()
+    def select_video(self, video_file=None):
+        if video_file is None:
+            video_file, _ = QFileDialog.getOpenFileName()
+
         if video_file:
             self.video_input.setText(video_file)
 
-    def select_audio(self):
-        audio_file, _ = QFileDialog.getOpenFileName()
+    def select_audio(self, audio_file=None):
+        if audio_file is None:
+            audio_file, _ = QFileDialog.getOpenFileName()
+
         if audio_file:
             self.audio_input.setText(audio_file)
+
+    def select_output_folder(self):
+        output_folder = QFileDialog.getExistingDirectory(
+            self, "Select Output Folder")
+
+        if output_folder:
+            self.output_folder_input.setText(output_folder)
 
     @staticmethod
     def get_frame_count(file_path):
@@ -137,7 +184,8 @@ class FFmpegGUI(QWidget):
         if not video_file:
             return
 
-        output_file = f"output_{codec}_{pix_fmt}.mp4"
+        output_file = os.path.join(self.output_folder_input.text(),
+                                   f"output_{codec}_{pix_fmt}.mp4")
 
         if '%' in video_file:
             input_stream = ffmpeg.input(
