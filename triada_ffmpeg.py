@@ -1,10 +1,20 @@
+# pylint: disable=missing-module-docstring
+# pylint: disable=missing-class-docstring
+# pylint: disable=missing-function-docstring
+# pylint: disable=no-name-in-module
+# pylint: disable=unnecessary-lambda
+
 import sys
 import os
 import re
 import subprocess
 import glob
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QLabel, QComboBox, QLineEdit, QRadioButton, QSlider, QProgressBar
+
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
+from PyQt5.QtWidgets import QPushButton, QRadioButton, QSlider, QProgressBar
+from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths
+
 import ffmpeg
 
 
@@ -39,17 +49,19 @@ class DnDLineEdit(QLineEdit):
         super().__init__(*args, **kwargs)
         self.setAcceptDrops(True)
 
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self, event):  # pylint: disable=invalid-name
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 
-    def dropEvent(self, event):
+    def dropEvent(self, event):  # pylint: disable=invalid-name
         url = event.mimeData().urls()[0].toLocalFile()
         self.setText(url)
         self.file_dropped.emit(url)
 
 
 class FFmpegGUI(QWidget):
+    encoder_thread = None
+
     def __init__(self):
         super().__init__()
 
@@ -226,8 +238,8 @@ class FFmpegGUI(QWidget):
             self.encoder_thread.start()
             self.encode_button.setEnabled(False)
 
-        except ffmpeg.Error as e:
-            print(e.stderr.decode())
+        except ffmpeg.Error as error:
+            print(error.stderr.decode())
 
     def update_progress(self, frame_number):
         self.progress_bar.setValue(frame_number)
