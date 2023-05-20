@@ -12,7 +12,7 @@ import glob
 
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtWidgets import QPushButton, QRadioButton, QSlider, QProgressBar
-from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit
+from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit, QSpinBox
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths
 
 import ffmpeg
@@ -61,6 +61,7 @@ class DnDLineEdit(QLineEdit):
 
 class FFmpegGUI(QWidget):
     encoder_thread = None
+    output_base_name = None
 
     def __init__(self):
         super().__init__()
@@ -83,6 +84,18 @@ class FFmpegGUI(QWidget):
         video_layout.addWidget(self.video_input)
         video_layout.addWidget(self.video_button)
         layout.addLayout(video_layout)
+
+        self.frame_rate_label = QLabel('Frame Rate')
+        self.frame_rate_input = QSpinBox()
+        # Set the minimum and maximum frame rate values
+        self.frame_rate_input.setRange(1, 240)
+        # Set the default frame rate value to 30
+        self.frame_rate_input.setValue(30)
+        layout.addWidget(self.frame_rate_label)
+        layout.addWidget(self.frame_rate_input)
+        # Set initially hidden until the image sequence is detected
+        self.frame_rate_label.hide()
+        self.frame_rate_input.hide()
 
         layout.addWidget(QLabel('Audio Source (optional)'))
         self.audio_input = DnDLineEdit()
@@ -148,6 +161,34 @@ class FFmpegGUI(QWidget):
             video_file, _ = QFileDialog.getOpenFileName()
 
         if video_file:
+            # Check if the selected file is an image file (e.g., *00000.png or *%0*d.png)
+            match = re.match(r'^(.*?)(?:(\d+)|%(\d+)d)\.(png|jpg|jpeg|tiff)$',
+                             os.path.basename(video_file), re.IGNORECASE)
+            if match:
+                # Get the prefix, the number of digits in the frame number, and the file extension
+                prefix, frame_number, percentage, file_ext = match.groups()
+                if frame_number:
+                    num_digits = len(frame_number)
+                elif percentage:
+                    num_digits = int(percentage)
+
+                video_file = os.path.join(os.path.dirname(
+                    video_file), f"{prefix}%0{num_digits}d.{file_ext}")
+
+                # Set the default output file name based on the input file name
+                self.output_base_name = prefix.rstrip('_')
+                # Show the frame rate selector
+                self.frame_rate_label.show()
+                self.frame_rate_input.show()
+            else:
+                # Set the default output file name based on the input file name
+                self.output_base_name = os.path.splitext(
+                    os.path.basename(video_file))[0]
+
+                # Hide the frame rate selector
+                self.frame_rate_label.hide()
+                self.frame_rate_input.hide()
+
             self.video_input.setText(video_file)
 
     def select_audio(self, audio_file=None):
@@ -197,11 +238,12 @@ class FFmpegGUI(QWidget):
             return
 
         output_file = os.path.join(self.output_folder_input.text(),
-                                   f"output_{codec}_{pix_fmt}.mp4")
+                                   f"{self.output_base_name} {codec}_{pix_fmt}.mp4")
 
         if '%' in video_file:
+            frame_rate = self.frame_rate_input.value()
             input_stream = ffmpeg.input(
-                video_file, format='image2', framerate=25)
+                video_file, format='image2', framerate=frame_rate)
         else:
             input_stream = ffmpeg.input(video_file)
 
