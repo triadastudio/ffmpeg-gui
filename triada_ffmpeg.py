@@ -72,6 +72,7 @@ class DnDLineEdit(QLineEdit):
 
 class FFmpegGUI(QWidget):
     encoder_thread = None
+    video_file_info = None
     output_base_name = None
 
     def __init__(self):
@@ -213,6 +214,7 @@ class FFmpegGUI(QWidget):
                 self.frame_rate_input.hide()
 
             self.video_input.setText(video_file)
+            self.video_file_info = self.get_file_info(video_file)
 
     def select_audio(self, audio_file=None):
         if audio_file is None:
@@ -229,9 +231,12 @@ class FFmpegGUI(QWidget):
             self.output_folder_input.setText(output_folder)
 
     @staticmethod
-    def get_frame_count(file_path):
+    def get_file_info(file_path):
         try:
             frame_count = 0
+            duration = None
+            audio_stream_count = 0
+            is_rgb = False
 
             # Check if the input is an image sequence
             if '%' in file_path:
@@ -239,13 +244,25 @@ class FFmpegGUI(QWidget):
                 pattern = re.sub(r'%0\d+d', '*', file_path)
                 # Count the number of matching files in the directory
                 frame_count = len(glob.glob(pattern))
+                is_rgb = True
             else:
                 streams = ffmpeg.probe(file_path)["streams"]
                 for stream in streams:
                     if stream['codec_type'] == 'video':
+                        pixel_format = stream['pix_fmt']
+                        is_rgb = pixel_format == "rgb" or pixel_format == "gbrp"
                         frame_count = int(stream['nb_frames'])
+                        duration = float(stream['duration'])
 
-            return frame_count
+                    if stream['codec_type'] == 'audio':
+                        audio_stream_count += 1
+
+            return {
+                'frame_count': frame_count,
+                'duration': duration,
+                'audio_stream_count': audio_stream_count,
+                'is_rgb': is_rgb,
+            }
 
         except (ffmpeg.Error, KeyError, StopIteration):
             return None
@@ -256,6 +273,7 @@ class FFmpegGUI(QWidget):
         crf = self.crf_slider.value()
         codec = self.codec_combo.currentText()
         pix_fmt = 'yuv420p' if self.pix_fmt_8bit.isChecked() else 'yuv420p10le'
+        colorspace = "bt709"
 
         if not video_file:
             return
@@ -263,26 +281,37 @@ class FFmpegGUI(QWidget):
         output_file = os.path.join(self.output_folder_input.text(),
                                    f"{self.output_base_name} {codec}_{pix_fmt}.mp4")
 
+        frame_count = self.video_file_info['frame_count']
+        video_file_has_audio = self.video_file_info['audio_stream_count'] > 0
+        input_is_rgb = self.video_file_info['is_rgb']
+
+        audio = None
         if '%' in video_file:
             frame_rate = self.frame_rate_input.value()
             input_stream = ffmpeg.input(
                 video_file, format='image2', framerate=frame_rate)
+            video_duration = frame_count / frame_rate
         else:
             input_stream = ffmpeg.input(video_file)
+            video_duration = self.video_file_info['duration']
+            if video_file_has_audio:
+                audio = input_stream.audio
+
+        video = input_stream.video
+
+        if input_is_rgb:
+            video = video.filter('scale', in_color_matrix='bt601', out_color_matrix='bt709')
+
+        if audio_file:
+            audio = ffmpeg.input(audio_file).audio
+            audio = audio.filter_('atrim', duration=video_duration)
+
+        if audio is not None:
+            stream = ffmpeg.concat(video, audio, v=1, a=1)
+        else:
+            stream = video
 
         try:
-            if audio_file:
-                audio_stream = ffmpeg.input(audio_file)
-                audio = audio_stream.audio
-                video = input_stream.video
-                stream = ffmpeg.concat(video, audio, v=1, a=1)
-            else:
-                stream = input_stream
-
-            frame_count = self.get_frame_count(video_file)
-            if frame_count is not None:
-                self.progress_bar.setMaximum(frame_count)
-
             cmd = (
                 ffmpeg
                 .compile(
@@ -291,6 +320,10 @@ class FFmpegGUI(QWidget):
                             vcodec=codec,
                             crf=crf,
                             pix_fmt=pix_fmt,
+                            colorspace=colorspace,
+                            color_trc=colorspace,
+                            color_primaries=colorspace,
+                            movflags="faststart",
                             y=None)
                 )
             )
@@ -300,10 +333,13 @@ class FFmpegGUI(QWidget):
             self.encoder_thread = EncoderThread(cmd)
             self.encoder_thread.progress.connect(self.update_progress)
             self.encoder_thread.finished.connect(self.encoding_finished)
-            self.encoder_thread.start()
+
             self.encode_button.setEnabled(False)
             self.stop_button.setEnabled(True)
+            self.progress_bar.setMaximum(frame_count)
             self.progress_bar_opacity.setOpacity(1.0)
+
+            self.encoder_thread.start()
 
         except ffmpeg.Error as error:
             print(error.stderr.decode())
