@@ -13,6 +13,7 @@ import glob
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtWidgets import QPushButton, QRadioButton, QSlider, QProgressBar
 from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit, QSpinBox
+from PyQt5.QtWidgets import QGraphicsOpacityEffect
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths
 
 import ffmpeg
@@ -24,9 +25,11 @@ class EncoderThread(QThread):
     def __init__(self, cmd):
         super().__init__()
         self.cmd = cmd
+        self.stop_flag = False
 
     def run(self):
         process = subprocess.Popen(self.cmd,
+                                   stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
                                    universal_newlines=True)
@@ -39,7 +42,15 @@ class EncoderThread(QThread):
                 frame_number = int(progress_match.group(1))
                 self.progress.emit(frame_number)
 
+            if self.stop_flag:  # check stop flag
+                process.stdin.write('q')  # send "q" keypress to stop
+                process.stdin.flush()
+                break
+
         process.wait()
+
+    def stop(self):
+        self.stop_flag = True
 
 
 class DnDLineEdit(QLineEdit):
@@ -144,13 +155,25 @@ class FFmpegGUI(QWidget):
             QStandardPaths.DocumentsLocation)
         self.output_folder_input.setText(default_output_folder)
 
-        self.encode_button = QPushButton('Encode')
+        self.encode_button = QPushButton('Start')
+        self.encode_button.setMinimumSize(0, 32)
         self.encode_button.clicked.connect(self.encode_video)
-        layout.addWidget(self.encode_button)
+
+        self.stop_button = QPushButton('Stop', self)
+        self.stop_button.setMinimumSize(0, 32)
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_encoding)
+
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.encode_button)
+        button_layout.addWidget(self.stop_button)
+        layout.addLayout(button_layout)
 
         self.progress_bar = QProgressBar()
         layout.addWidget(self.progress_bar)
-
+        self.progress_bar_opacity = QGraphicsOpacityEffect(self.progress_bar)
+        self.progress_bar.setGraphicsEffect(self.progress_bar_opacity)
+        self.progress_bar_opacity.setOpacity(0.0)
         self.setLayout(layout)
 
     def update_crf_label(self, value):
@@ -279,9 +302,15 @@ class FFmpegGUI(QWidget):
             self.encoder_thread.finished.connect(self.encoding_finished)
             self.encoder_thread.start()
             self.encode_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.progress_bar_opacity.setOpacity(1.0)
 
         except ffmpeg.Error as error:
             print(error.stderr.decode())
+
+    def stop_encoding(self):
+        self.stop_button.setEnabled(False)
+        self.encoder_thread.stop()
 
     def update_progress(self, frame_number):
         self.progress_bar.setValue(frame_number)
@@ -289,6 +318,8 @@ class FFmpegGUI(QWidget):
     def encoding_finished(self):
         self.progress_bar.reset()
         self.encode_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.progress_bar_opacity.setOpacity(0.0)
         print("Encoding finished")
 
 
