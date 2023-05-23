@@ -123,15 +123,22 @@ class FFmpegGUI(QWidget):
 
         layout.addWidget(QLabel('Codec'))
         self.codec_combo = QComboBox()
-        self.codec_combo.addItems(['libx264', 'libx265'])
+        self.codec_combo.addItems(['x264', 'x265'])
         layout.addWidget(self.codec_combo)
+        self.codec_combo.setCurrentIndex(1)  # Set the x265 codec as default
+        self.codec_combo.currentIndexChanged.connect(self.on_codec_changed)
 
         layout.addWidget(QLabel('Pixel Format'))
-        self.pix_fmt_8bit = QRadioButton('8-bit (yuv420p)')
-        self.pix_fmt_10bit = QRadioButton('10-bit (yuv420p10le)')
+        self.pix_fmt_8bit = QRadioButton('8-bit 4:2:0')
+        self.pix_fmt_10bit = QRadioButton('10-bit 4:2:0')
+        self.pix_fmt_10bit422 = QRadioButton('10-bit 4:2:2')
         layout.addWidget(self.pix_fmt_8bit)
         layout.addWidget(self.pix_fmt_10bit)
-        self.pix_fmt_8bit.setChecked(True)
+        layout.addWidget(self.pix_fmt_10bit422)
+        self.pix_fmt_10bit.setChecked(True)
+        self.pix_fmt_8bit.toggled.connect(self.update_output_file_name)
+        self.pix_fmt_10bit.toggled.connect(self.update_output_file_name)
+        self.pix_fmt_10bit422.toggled.connect(self.update_output_file_name)
 
         self.crf_label = QLabel()
         layout.addWidget(self.crf_label)
@@ -156,6 +163,10 @@ class FFmpegGUI(QWidget):
             QStandardPaths.DocumentsLocation)
         self.output_folder_input.setText(default_output_folder)
 
+        layout.addWidget(QLabel('Output File'))
+        self.output_file_input = QLineEdit()
+        layout.addWidget(self.output_file_input)
+
         self.encode_button = QPushButton('Start')
         self.encode_button.setMinimumSize(0, 32)
         self.encode_button.clicked.connect(self.encode_video)
@@ -177,8 +188,31 @@ class FFmpegGUI(QWidget):
         self.progress_bar_opacity.setOpacity(0.0)
         self.setLayout(layout)
 
+    def update_output_file_name(self):
+        if self.output_base_name is not None:
+            codec_name = self.codec_combo.currentText().lower()
+            container = "mp4"
+            pix_fmt_name = '10bit' if self.pix_fmt_10bit.isChecked(
+            ) or self.pix_fmt_10bit422.isChecked() else ''
+            crf = self.crf_slider.value()
+            output_file_name = (
+                f"{self.output_base_name} {codec_name}"
+                f"{'_' + pix_fmt_name if pix_fmt_name else ''}"
+                f"_q{crf}.{container}"
+            )
+            self.output_file_input.setText(output_file_name)
+
+    def on_codec_changed(self, index):
+        codec = self.codec_combo.itemText(index).lower()
+        if codec == 'x264':
+            self.pix_fmt_8bit.setChecked(True)
+        else:
+            self.pix_fmt_10bit.setChecked(True)
+        self.update_output_file_name()
+
     def update_crf_label(self, value):
         self.crf_label.setText(f"Quality (CRF): {value}")
+        self.update_output_file_name()
 
     def select_video(self, video_file=None):
         if video_file is None:
@@ -215,6 +249,7 @@ class FFmpegGUI(QWidget):
 
             self.video_input.setText(video_file)
             self.video_file_info = self.get_file_info(video_file)
+            self.update_output_file_name()
 
     def select_audio(self, audio_file=None):
         if audio_file is None:
@@ -269,17 +304,29 @@ class FFmpegGUI(QWidget):
 
     def encode_video(self):
         video_file = self.video_input.text()
-        audio_file = self.audio_input.text()
-        crf = self.crf_slider.value()
-        codec = self.codec_combo.currentText()
-        pix_fmt = 'yuv420p' if self.pix_fmt_8bit.isChecked() else 'yuv420p10le'
-        colorspace = "bt709"
 
         if not video_file:
             return
 
         output_file = os.path.join(self.output_folder_input.text(),
-                                   f"{self.output_base_name} {codec}_{pix_fmt}.mp4")
+                                   self.output_file_input.text())
+
+        audio_file = self.audio_input.text()
+        crf = self.crf_slider.value()
+
+        codec = {
+            "x264": "libx264",
+            "x265": "libx265"
+        }[self.codec_combo.currentText()]
+
+        if self.pix_fmt_10bit.isChecked():
+            pix_fmt = 'yuv420p10'
+        elif self.pix_fmt_10bit422.isChecked():
+            pix_fmt = 'yuv422p10'
+        else:
+            pix_fmt = 'yuv420p'
+
+        colorspace = "bt709"
 
         frame_count = self.video_file_info['frame_count']
         video_file_has_audio = self.video_file_info['audio_stream_count'] > 0
