@@ -19,6 +19,7 @@ from PyQt5.QtGui import QTextCursor
 
 import ffmpeg
 
+VERSION = "0.1"
 
 class EncoderThread(QThread):
     progress = pyqtSignal(int)
@@ -94,7 +95,9 @@ class FFmpegGUI(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle('Triada FFmpeg GUI')
+        self.setWindowTitle(f"Triada FFmpeg GUI v{VERSION}")
+        # Set initial window size
+        self.resize(300, self.height())
 
         layout = QVBoxLayout()
 
@@ -163,6 +166,22 @@ class FFmpegGUI(QWidget):
         self.crf_slider.valueChanged.connect(self.update_crf_label)
         layout.addWidget(self.crf_slider)
         self.update_crf_label(self.crf_slider.value())
+
+        layout.addWidget(QLabel('Audio Bitrate (kbps)'))
+        self.audio_bitrate_input = QSpinBox()
+        self.audio_bitrate_input.setFixedWidth(64)
+        self.audio_bitrate_input.setRange(32, 512)
+        self.audio_bitrate_input.setSingleStep(64)
+        self.audio_bitrate_input.setValue(320)
+        layout.addWidget(self.audio_bitrate_input)
+
+        layout.addWidget(QLabel('Preset'))
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(
+            ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'])
+        layout.addWidget(self.preset_combo)
+        # Set the 'slow' preset as default
+        self.preset_combo.setCurrentIndex(4)
 
         layout.addWidget(QLabel('Output Folder'))
         self.output_folder_input = QLineEdit()
@@ -380,6 +399,9 @@ class FFmpegGUI(QWidget):
             pix_fmt = 'yuv420p'
 
         colorspace = "bt709"
+        preset = self.preset_combo.currentText()
+
+        audio_bitrate = self.audio_bitrate_input.value()
 
         frame_count = self.video_file_info['frame_count']
         video_file_has_audio = self.video_file_info['audio_stream_count'] > 0
@@ -420,9 +442,12 @@ class FFmpegGUI(QWidget):
                             vcodec=codec,
                             crf=crf,
                             pix_fmt=pix_fmt,
+                            preset=preset,
                             colorspace=colorspace,
                             color_trc=colorspace,
                             color_primaries=colorspace,
+                            acodec = "aac",
+                            ab = f"{audio_bitrate}k",
                             movflags="faststart",
                             y=None)
                 )
