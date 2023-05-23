@@ -13,8 +13,9 @@ import glob
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtWidgets import QPushButton, QRadioButton, QSlider, QProgressBar
 from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit, QSpinBox
-from PyQt5.QtWidgets import QGraphicsOpacityEffect
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths
+from PyQt5.QtWidgets import QGraphicsOpacityEffect, QTextEdit, QCheckBox, QMessageBox
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QObject
+from PyQt5.QtGui import QTextCursor
 
 import ffmpeg
 
@@ -70,14 +71,26 @@ class DnDLineEdit(QLineEdit):
         self.file_dropped.emit(url)
 
 
+class CustomStream(QObject):
+    message_written = pyqtSignal(str)
+
+    def write(self, text):
+        self.message_written.emit(str(text))
+
+    def flush(self):
+        pass
+
+
 class FFmpegGUI(QWidget):
     encoder_thread = None
     video_file_info = None
     output_base_name = None
+    custom_stream = None
 
     def __init__(self):
         super().__init__()
 
+        self.original_stdout = sys.stdout
         self.init_ui()
 
     def init_ui(self):
@@ -186,7 +199,32 @@ class FFmpegGUI(QWidget):
         self.progress_bar_opacity = QGraphicsOpacityEffect(self.progress_bar)
         self.progress_bar.setGraphicsEffect(self.progress_bar_opacity)
         self.progress_bar_opacity.setOpacity(0.0)
+
+        self.show_console_output_checkbox = QCheckBox("Show console output")
+        layout.addWidget(self.show_console_output_checkbox)
+
+        self.console_output = QTextEdit()
+        self.console_output.setReadOnly(True)
+        layout.addWidget(self.console_output)
+        self.console_output.hide()
+        self.show_console_output_checkbox.stateChanged.connect(self.toggle_console_output)
+
         self.setLayout(layout)
+
+    def toggle_console_output(self, state):
+        if state == Qt.Checked:
+            self.console_output.show()
+            self.custom_stream = CustomStream()
+            self.custom_stream.message_written.connect(self.append_to_console)
+            sys.stdout = self.custom_stream
+        else:
+            self.console_output.hide()
+            sys.stdout = self.original_stdout
+
+    def append_to_console(self, text):
+        self.console_output.moveCursor(QTextCursor.End)
+        self.console_output.insertPlainText(text)
+        self.console_output.moveCursor(QTextCursor.End)
 
     def update_output_file_name(self):
         if self.output_base_name is not None:
@@ -302,6 +340,18 @@ class FFmpegGUI(QWidget):
         except (ffmpeg.Error, KeyError, StopIteration):
             return None
 
+    def check_file_overwrite(self, output_file):
+        if os.path.exists(output_file):
+            reply = QMessageBox.question(
+                self, "Overwrite existing file?",
+                f"The file '{output_file}' already exists. Do you want to overwrite it?",
+                QMessageBox.Yes | QMessageBox.No)
+
+            if reply == QMessageBox.No:
+                return False
+
+        return True
+
     def encode_video(self):
         video_file = self.video_input.text()
 
@@ -310,6 +360,9 @@ class FFmpegGUI(QWidget):
 
         output_file = os.path.join(self.output_folder_input.text(),
                                    self.output_file_input.text())
+
+        if not self.check_file_overwrite(output_file):
+            return
 
         audio_file = self.audio_input.text()
         crf = self.crf_slider.value()
