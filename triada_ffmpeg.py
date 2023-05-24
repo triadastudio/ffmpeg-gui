@@ -14,12 +14,14 @@ from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtWidgets import QPushButton, QRadioButton, QSlider, QProgressBar
 from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit, QSpinBox
 from PyQt5.QtWidgets import QGraphicsOpacityEffect, QTextEdit, QCheckBox, QMessageBox
+from PyQt5.QtWidgets import QButtonGroup, QFrame, QGridLayout
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QObject
 from PyQt5.QtGui import QTextCursor
 
 import ffmpeg
 
-VERSION = "0.1.1"
+VERSION = "0.2"
+
 
 class EncoderThread(QThread):
     progress = pyqtSignal(int)
@@ -139,22 +141,39 @@ class FFmpegGUI(QWidget):
 
         layout.addWidget(QLabel('Codec'))
         self.codec_combo = QComboBox()
-        self.codec_combo.addItems(['x264', 'x265'])
+        self.codec_combo.addItems(['x264', 'x265', 'ProRes'])
         layout.addWidget(self.codec_combo)
         self.codec_combo.setCurrentIndex(1)  # Set the x265 codec as default
         self.codec_combo.currentIndexChanged.connect(self.on_codec_changed)
 
-        layout.addWidget(QLabel('Pixel Format'))
-        self.pix_fmt_8bit = QRadioButton('8-bit 4:2:0')
-        self.pix_fmt_10bit = QRadioButton('10-bit 4:2:0')
-        self.pix_fmt_10bit422 = QRadioButton('10-bit 4:2:2')
-        layout.addWidget(self.pix_fmt_8bit)
-        layout.addWidget(self.pix_fmt_10bit)
-        layout.addWidget(self.pix_fmt_10bit422)
-        self.pix_fmt_10bit.setChecked(True)
-        self.pix_fmt_8bit.toggled.connect(self.update_output_file_name)
-        self.pix_fmt_10bit.toggled.connect(self.update_output_file_name)
-        self.pix_fmt_10bit422.toggled.connect(self.update_output_file_name)
+        # x264/x265 pixel format radio buttons
+        self.pixel_format_frame = QFrame()
+        pixel_format_layout = QVBoxLayout(self.pixel_format_frame)
+        pixel_format_layout.setContentsMargins(0, 0, 0, 0)
+        pixel_format_layout.addWidget(QLabel('Pixel Format'))
+
+        self.pixel_format_buttons = self.create_radio_button_group(
+            ['8-bit 4:2:0', '10-bit 4:2:0', '10-bit 4:2:2'],
+            default_index=1,
+            layout=pixel_format_layout,
+            callback=self.update_output_file_name)
+
+        # ProRes profile radio buttons
+        self.prores_profile_frame = QFrame()
+        prores_profile_layout = QGridLayout(self.prores_profile_frame)
+        prores_profile_layout.addWidget(QLabel('Profile'), 0, 0, 1, -1)
+        prores_profile_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.prores_profile_buttons = self.create_radio_button_group(
+            ['proxy', 'lt', 'standart', 'hq', '4444', '4444hq'],
+            default_index=2,
+            layout=prores_profile_layout,
+            callback=self.update_output_file_name,
+            row_count=3)
+
+        # Add to main layout
+        layout.addWidget(self.pixel_format_frame)
+        layout.addWidget(self.prores_profile_frame)
 
         self.crf_label = QLabel()
         layout.addWidget(self.crf_label)
@@ -230,6 +249,31 @@ class FFmpegGUI(QWidget):
 
         self.setLayout(layout)
 
+        self.on_codec_changed(self.codec_combo.currentIndex())
+
+    @staticmethod
+    def create_radio_button_group(labels, default_index, layout, callback, row_count=1):
+        button_group = QButtonGroup()
+        radio_buttons = []
+
+        for i, label in enumerate(labels):
+            radio_button = QRadioButton(label)
+            button_group.addButton(radio_button)
+            radio_button.toggled.connect(callback)
+
+            if row_count > 1:
+                # Compute grid position
+                position = (i % row_count + 1, i // row_count)
+                layout.addWidget(radio_button, *position)
+            else:  # Default to vertical layout
+                layout.addWidget(radio_button)
+
+            radio_buttons.append(radio_button)
+
+        radio_buttons[default_index].setChecked(True)
+
+        return radio_buttons
+
     def toggle_console_output(self, state):
         if state == Qt.Checked:
             self.console_output.show()
@@ -248,9 +292,13 @@ class FFmpegGUI(QWidget):
     def update_output_file_name(self):
         if self.output_base_name is not None:
             codec_name = self.codec_combo.currentText().lower()
-            container = "mp4"
-            pix_fmt_name = '10bit' if self.pix_fmt_10bit.isChecked(
-            ) or self.pix_fmt_10bit422.isChecked() else ''
+            if codec_name == "prores":
+                container = "mov"
+                pix_fmt_name = self.prores_profile_buttons[self.get_prores_profile_index(
+                )].text().lower()
+            else:
+                container = "mp4"
+                pix_fmt_name = ('', '10bit', '10bit422')[self.get_pixel_format_index()]
             crf = self.crf_slider.value()
             output_file_name = (
                 f"{self.output_base_name} {codec_name}"
@@ -261,10 +309,16 @@ class FFmpegGUI(QWidget):
 
     def on_codec_changed(self, index):
         codec = self.codec_combo.itemText(index).lower()
-        if codec == 'x264':
-            self.pix_fmt_8bit.setChecked(True)
-        else:
-            self.pix_fmt_10bit.setChecked(True)
+        if codec == 'x264' or codec == 'x265':
+            self.prores_profile_frame.hide()
+            self.pixel_format_frame.show()
+            if codec == 'x264':
+                self.pixel_format_buttons[0].setChecked(True)
+            else:
+                self.pixel_format_buttons[1].setChecked(True)
+        elif codec == 'prores':
+            self.pixel_format_frame.hide()
+            self.prores_profile_frame.show()
         self.update_output_file_name()
 
     def update_crf_label(self, value):
@@ -359,6 +413,14 @@ class FFmpegGUI(QWidget):
         except (ffmpeg.Error, KeyError, StopIteration):
             return None
 
+    def get_pixel_format_index(self):
+        return next((i for i, button in enumerate(self.pixel_format_buttons)
+                     if button.isChecked()), "0")
+
+    def get_prores_profile_index(self):
+        return next((i for i, button in enumerate(self.prores_profile_buttons)
+                     if button.isChecked()), "0")
+
     def check_file_overwrite(self, output_file):
         if os.path.exists(output_file):
             reply = QMessageBox.question(
@@ -388,15 +450,14 @@ class FFmpegGUI(QWidget):
 
         codec = {
             "x264": "libx264",
-            "x265": "libx265"
+            "x265": "libx265",
+            "ProRes": "prores_ks"
         }[self.codec_combo.currentText()]
 
-        if self.pix_fmt_10bit.isChecked():
-            pix_fmt = 'yuv420p10'
-        elif self.pix_fmt_10bit422.isChecked():
-            pix_fmt = 'yuv422p10'
+        if codec == "prores_ks":
+            pix_fmt = 'yuv444p10' if self.get_prores_profile_index() >= 4 else 'yuv422p10'
         else:
-            pix_fmt = 'yuv420p'
+            pix_fmt = ('yuv420p', 'yuv420p10', 'yuv422p10')[self.get_pixel_format_index()]
 
         colorspace = "bt709"
         preset = self.preset_combo.currentText()
@@ -404,14 +465,21 @@ class FFmpegGUI(QWidget):
         ffmpeg_args = {
             "vcodec": codec,
             "pix_fmt": pix_fmt,
-            "crf": crf,
-            "preset": preset,
             "colorspace": colorspace,
             "color_trc": colorspace,
             "color_primaries": colorspace,
-            "movflags": "faststart",
             "y": None  # force overwrite
         }
+
+        if codec == "libx264" or codec == "libx265":
+            ffmpeg_args["crf"] = crf
+            ffmpeg_args["preset"] = preset
+            ffmpeg_args["movflags"] = "faststart"
+
+        elif codec == "prores_ks":
+            ffmpeg_args["profile:v"] = self.get_prores_profile_index()
+            ffmpeg_args["q:v"] = crf
+            ffmpeg_args["vendor"] = "ap10"
 
         audio_bitrate = self.audio_bitrate_input.value()
 
