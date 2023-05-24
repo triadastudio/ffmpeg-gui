@@ -19,7 +19,7 @@ from PyQt5.QtGui import QTextCursor
 
 import ffmpeg
 
-VERSION = "0.1"
+VERSION = "0.1.1"
 
 class EncoderThread(QThread):
     progress = pyqtSignal(int)
@@ -401,6 +401,18 @@ class FFmpegGUI(QWidget):
         colorspace = "bt709"
         preset = self.preset_combo.currentText()
 
+        ffmpeg_args = {
+            "vcodec": codec,
+            "pix_fmt": pix_fmt,
+            "crf": crf,
+            "preset": preset,
+            "colorspace": colorspace,
+            "color_trc": colorspace,
+            "color_primaries": colorspace,
+            "movflags": "faststart",
+            "y": None  # force overwrite
+        }
+
         audio_bitrate = self.audio_bitrate_input.value()
 
         frame_count = self.video_file_info['frame_count']
@@ -429,29 +441,14 @@ class FFmpegGUI(QWidget):
             audio = audio.filter_('atrim', duration=video_duration)
 
         if audio is not None:
-            stream = ffmpeg.concat(video, audio, v=1, a=1)
+            ffmpeg_args["acodec"] = "aac"
+            ffmpeg_args["ab"] = f"{audio_bitrate}k"
+            output = ffmpeg.output(video, audio, output_file, **ffmpeg_args)
         else:
-            stream = video
+            output = ffmpeg.output(video, output_file, **ffmpeg_args)
 
         try:
-            cmd = (
-                ffmpeg
-                .compile(
-                    stream
-                    .output(output_file,
-                            vcodec=codec,
-                            crf=crf,
-                            pix_fmt=pix_fmt,
-                            preset=preset,
-                            colorspace=colorspace,
-                            color_trc=colorspace,
-                            color_primaries=colorspace,
-                            acodec = "aac",
-                            ab = f"{audio_bitrate}k",
-                            movflags="faststart",
-                            y=None)
-                )
-            )
+            cmd = ffmpeg.compile(output)
 
             print("FFmpeg command:", " ".join(cmd))
 
