@@ -20,7 +20,7 @@ from PyQt5.QtGui import QTextCursor
 
 import ffmpeg
 
-VERSION = "0.2"
+VERSION = "0.3"
 
 
 class EncoderThread(QThread):
@@ -186,13 +186,38 @@ class FFmpegGUI(QWidget):
         layout.addWidget(self.crf_slider)
         self.update_crf_label(self.crf_slider.value())
 
-        layout.addWidget(QLabel('Audio Bitrate (kbps)'))
+        self.audio_frame = QFrame()
+        audio_layout = QVBoxLayout(self.audio_frame)
+        audio_layout.setContentsMargins(0, 0, 0, 0)
+        self.audio_codec_combo = QComboBox()
+        self.audio_codec_combo.addItem("AAC")
+        self.audio_codec_combo.addItem("PCM 16-bit")
+        self.audio_codec_combo.addItem("PCM 24-bit")
+        audio_layout.addWidget(QLabel('Audio Codec'))
+        audio_layout.addWidget(self.audio_codec_combo)
+
+        self.audio_codec_combo.currentTextChanged.connect(
+            lambda codec: self.audio_bitrate_input.setEnabled(codec == "AAC"))
+
+        audio_layout.addWidget(QLabel('Audio Bitrate (kbps)'))
         self.audio_bitrate_input = QSpinBox()
         self.audio_bitrate_input.setFixedWidth(64)
         self.audio_bitrate_input.setRange(32, 512)
         self.audio_bitrate_input.setSingleStep(64)
         self.audio_bitrate_input.setValue(320)
-        layout.addWidget(self.audio_bitrate_input)
+        audio_layout.addWidget(self.audio_bitrate_input)
+
+        self.audio_direct_stream_copy = QCheckBox('direct stream copy')
+        audio_layout.addWidget(self.audio_direct_stream_copy)
+
+        self.audio_direct_stream_copy.stateChanged.connect(
+            lambda state: (
+                self.audio_codec_combo.setEnabled(state == Qt.Unchecked),
+                self.audio_bitrate_input.setEnabled(state == Qt.Unchecked)
+            )
+        )
+
+        layout.addWidget(self.audio_frame)
 
         layout.addWidget(QLabel('Preset'))
         self.preset_combo = QComboBox()
@@ -506,11 +531,15 @@ class FFmpegGUI(QWidget):
 
         if audio_file:
             audio = ffmpeg.input(audio_file).audio
-            audio = audio.filter_('atrim', duration=video_duration)
+            if not self.audio_direct_stream_copy.isChecked():
+                audio = audio.filter_('atrim', duration=video_duration)
 
         if audio is not None:
-            ffmpeg_args["acodec"] = "aac"
-            ffmpeg_args["ab"] = f"{audio_bitrate}k"
+            audio_codec = 'copy' if self.audio_direct_stream_copy.isChecked() else (
+                'aac', 'pcm_s16le', 'pcm_s24le')[self.audio_codec_combo.currentIndex()]
+            ffmpeg_args["acodec"] = audio_codec
+            if audio_codec == 'aac':
+                ffmpeg_args["ab"] = f"{audio_bitrate}k"
             output = ffmpeg.output(video, audio, output_file, **ffmpeg_args)
         else:
             output = ffmpeg.output(video, output_file, **ffmpeg_args)
