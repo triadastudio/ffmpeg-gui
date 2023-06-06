@@ -352,12 +352,12 @@ class FFmpegGUI(QWidget):
             if self.resize_width.value() > 0 or self.resize_height.value() > 0:
                 width = self.resize_width.value()
                 height = self.resize_height.value()
-                if width > 0 and height == 0:
-                    size_prefix = f"{width}w"
-                elif height > 0 and width == 0:
-                    size_prefix = f"{height}p"
-                elif height > 0 and width > 0:
+                if height > 0 and width > 0:
                     size_prefix = f"{width}x{height}"
+                elif width > 0:
+                    size_prefix = f"{width}w"
+                elif height > 0:
+                    size_prefix = f"{height}p"
 
             codec_name = self.codec_combo.currentText().lower()
             if codec_name == "prores":
@@ -581,11 +581,9 @@ class FFmpegGUI(QWidget):
         resize_height = self.resize_height.value()
         resize_filter = self.resize_filter_combo.currentText()
 
-        if resize_width != 0 or resize_height != 0:
-            if resize_width == 0:
-                resize_width = -1
-            if resize_height == 0:
-                resize_height = -1
+        if resize_width > 0 or resize_height > 0:
+            resize_width = resize_width if resize_width > 0 else -1
+            resize_height = resize_height if resize_height > 0 else -1
 
             if input_is_rgb:
                 video = video.filter('scale', resize_width, resize_height, sws_flags=resize_filter,
