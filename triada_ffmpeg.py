@@ -20,7 +20,7 @@ from PyQt5.QtGui import QTextCursor
 
 import ffmpeg
 
-VERSION = "0.3"
+VERSION = "0.3.5"
 
 
 class EncoderThread(QThread):
@@ -36,7 +36,8 @@ class EncoderThread(QThread):
                                    stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
-                                   universal_newlines=True)
+                                   universal_newlines=True,
+                                   shell=True)
 
         for line in process.stdout:
             print(line.strip())
@@ -138,6 +139,36 @@ class FFmpegGUI(QWidget):
         audio_layout.addWidget(self.audio_input)
         audio_layout.addWidget(self.audio_button)
         layout.addLayout(audio_layout)
+
+        layout.addWidget(QLabel('Resize'))
+        resize_layout = QHBoxLayout()
+        self.resize_width = QSpinBox()
+        self.resize_width.setFixedWidth(64)
+        self.resize_width.setRange(0, 8192)
+        self.resize_width.setSingleStep(8)
+        self.resize_width.setValue(0)
+        resize_layout.addWidget(self.resize_width)
+        resize_layout.addWidget(QLabel('x'))
+        self.resize_height = QSpinBox()
+        self.resize_height.setFixedWidth(64)
+        self.resize_height.setRange(0, 8192)
+        self.resize_height.setSingleStep(8)
+        self.resize_height.setValue(0)
+        resize_layout.addWidget(self.resize_height)
+        resize_layout.addStretch(1)
+        self.resize_width.valueChanged.connect(self.on_resize_changed)
+        self.resize_height.valueChanged.connect(self.on_resize_changed)
+        layout.addLayout(resize_layout)
+
+        self.resize_filter_label = QLabel('Resize Filter')
+        self.resize_filter_combo = QComboBox()
+        self.resize_filter_combo.addItem('bicubic')
+        self.resize_filter_combo.addItem('lanczos')
+        self.resize_filter_combo.addItem('spline')
+        # Set the default value to "lanczos"
+        self.resize_filter_combo.setCurrentText('lanczos')
+        layout.addWidget(self.resize_filter_label)
+        layout.addWidget(self.resize_filter_combo)
 
         layout.addWidget(QLabel('Codec'))
         self.codec_combo = QComboBox()
@@ -274,6 +305,7 @@ class FFmpegGUI(QWidget):
 
         self.setLayout(layout)
 
+        self.on_resize_changed()
         self.on_codec_changed(self.codec_combo.currentIndex())
 
     @staticmethod
@@ -316,6 +348,17 @@ class FFmpegGUI(QWidget):
 
     def update_output_file_name(self):
         if self.output_base_name is not None:
+            size_prefix = ''
+            if self.resize_width.value() > 0 or self.resize_height.value() > 0:
+                width = self.resize_width.value()
+                height = self.resize_height.value()
+                if height > 0 and width > 0:
+                    size_prefix = f"{width}x{height}"
+                elif width > 0:
+                    size_prefix = f"{width}w"
+                elif height > 0:
+                    size_prefix = f"{height}p"
+
             codec_name = self.codec_combo.currentText().lower()
             if codec_name == "prores":
                 container = "mov"
@@ -326,11 +369,19 @@ class FFmpegGUI(QWidget):
                 pix_fmt_name = ('', '10bit', '10bit422')[self.get_pixel_format_index()]
             crf = self.crf_slider.value()
             output_file_name = (
-                f"{self.output_base_name} {codec_name}"
+                f"{self.output_base_name} "
+                f"{size_prefix + '_' if size_prefix else ''}"
+                f"{codec_name}"
                 f"{'_' + pix_fmt_name if pix_fmt_name else ''}"
                 f"_q{crf}.{container}"
             )
             self.output_file_input.setText(output_file_name)
+
+    def on_resize_changed(self):
+        enable_filter = self.resize_width.value() > 0 or self.resize_height.value() > 0
+        self.resize_filter_label.setEnabled(enable_filter)
+        self.resize_filter_combo.setEnabled(enable_filter)
+        self.update_output_file_name()
 
     def on_codec_changed(self, index):
         codec = self.codec_combo.itemText(index).lower()
@@ -526,8 +577,23 @@ class FFmpegGUI(QWidget):
 
         video = input_stream.video
 
-        if input_is_rgb:
-            video = video.filter('scale', in_color_matrix='bt601', out_color_matrix='bt709')
+        resize_width = self.resize_width.value()
+        resize_height = self.resize_height.value()
+        resize_filter = self.resize_filter_combo.currentText()
+
+        if resize_width > 0 or resize_height > 0:
+            resize_width = resize_width if resize_width > 0 else -1
+            resize_height = resize_height if resize_height > 0 else -1
+
+            if input_is_rgb:
+                video = video.filter('scale', resize_width, resize_height, sws_flags=resize_filter,
+                                     in_color_matrix='bt601', out_color_matrix='bt709')
+            else:
+                video = video.filter(
+                    'scale', resize_width, resize_height, sws_flags=resize_filter)
+        elif input_is_rgb:
+            video = video.filter(
+                'scale', in_color_matrix='bt601', out_color_matrix='bt709')
 
         if audio_file:
             audio = ffmpeg.input(audio_file).audio
