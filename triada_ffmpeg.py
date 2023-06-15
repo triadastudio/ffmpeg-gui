@@ -20,7 +20,7 @@ from PyQt5.QtGui import QTextCursor
 
 import ffmpeg
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 
 
 class EncoderThread(QThread):
@@ -250,13 +250,21 @@ class FFmpegGUI(QWidget):
 
         layout.addWidget(self.audio_frame)
 
-        layout.addWidget(QLabel('Preset'))
+        self.preset_frame = QFrame()
+        preset_layout = QVBoxLayout(self.preset_frame)
+        preset_layout.setContentsMargins(0, 0, 0, 0)
+        preset_layout.addWidget(QLabel('Preset'))
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(
             ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'])
-        layout.addWidget(self.preset_combo)
+        preset_layout.addWidget(self.preset_combo)
         # Set the 'slow' preset as default
         self.preset_combo.setCurrentIndex(4)
+
+        self.tune_grain = QCheckBox("grain retention")
+        preset_layout.addWidget(self.tune_grain)
+
+        layout.addWidget(self.preset_frame)
 
         layout.addWidget(QLabel('Output Folder'))
         self.output_folder_input = QLineEdit()
@@ -392,9 +400,11 @@ class FFmpegGUI(QWidget):
                 self.pixel_format_buttons[0].setChecked(True)
             else:
                 self.pixel_format_buttons[1].setChecked(True)
+            self.preset_frame.setEnabled(True)
         elif codec == 'prores':
             self.pixel_format_frame.hide()
             self.prores_profile_frame.show()
+            self.preset_frame.setEnabled(False)
         self.update_output_file_name()
 
     def update_crf_label(self, value):
@@ -551,6 +561,8 @@ class FFmpegGUI(QWidget):
             ffmpeg_args["crf"] = crf
             ffmpeg_args["preset"] = preset
             ffmpeg_args["movflags"] = "faststart"
+            if self.tune_grain.isChecked():
+                ffmpeg_args["tune"] = "grain"
 
         elif codec == "prores_ks":
             ffmpeg_args["profile:v"] = self.get_prores_profile_index()
