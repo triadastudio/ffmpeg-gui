@@ -12,15 +12,15 @@ import glob
 
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtWidgets import QPushButton, QRadioButton, QSlider, QProgressBar
-from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit, QSpinBox
+from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox
 from PyQt5.QtWidgets import QGraphicsOpacityEffect, QTextEdit, QCheckBox, QMessageBox
 from PyQt5.QtWidgets import QButtonGroup, QFrame, QGridLayout
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QObject
-from PyQt5.QtGui import QTextCursor
+from PyQt5.QtGui import QTextCursor, QValidator
 
 import ffmpeg
 
-VERSION = "0.3.6"
+VERSION = "0.4"
 
 
 class EncoderThread(QThread):
@@ -84,6 +84,17 @@ class CustomStream(QObject):
     def flush(self):
         pass
 
+class CustomDoubleSpinBox(QDoubleSpinBox):
+    def textFromValue(self, value):  # pylint: disable=invalid-name
+        if value.is_integer():
+            return str(int(value))
+        return super().textFromValue(value)
+
+    def validate(self, text, pos):
+        # Allows the user to enter non-integer values starting with an integer
+        if text.endswith('.') or '.' in text:
+            return (QValidator.Acceptable, text, pos)
+        return super().validate(text, pos)
 
 class FFmpegGUI(QWidget):
     encoder_thread = None
@@ -169,6 +180,17 @@ class FFmpegGUI(QWidget):
         self.resize_filter_combo.setCurrentText('lanczos')
         layout.addWidget(self.resize_filter_label)
         layout.addWidget(self.resize_filter_combo)
+
+        self.convert_frame_rate_label = QLabel('Convert Frame Rate')
+        self.convert_frame_rate_input = CustomDoubleSpinBox()
+        self.convert_frame_rate_input.setFixedWidth(64)
+        self.convert_frame_rate_input.setRange(0, 240)
+        self.convert_frame_rate_input.setDecimals(2)
+        self.convert_frame_rate_input.setSingleStep(1)
+        self.convert_frame_rate_input.setValue(0)
+        self.convert_frame_rate_input.setSpecialValueText("None")
+        layout.addWidget(self.convert_frame_rate_label)
+        layout.addWidget(self.convert_frame_rate_input)
 
         layout.addWidget(QLabel('Codec'))
         self.codec_combo = QComboBox()
@@ -606,6 +628,11 @@ class FFmpegGUI(QWidget):
         elif input_is_rgb:
             video = video.filter(
                 'scale', in_color_matrix='bt601', out_color_matrix='bt709')
+
+        convert_frame_rate = self.convert_frame_rate_input.value()
+
+        if convert_frame_rate > 0:
+            video = video.filter('fps',  fps=convert_frame_rate, round='near')
 
         if audio_file:
             audio = ffmpeg.input(audio_file).audio
