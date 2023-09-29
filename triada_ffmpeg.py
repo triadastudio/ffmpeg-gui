@@ -20,7 +20,7 @@ from PyQt5.QtGui import QTextCursor, QValidator
 
 import ffmpeg
 
-VERSION = "0.4"
+VERSION = "0.4.1"
 
 
 class EncoderThread(QThread):
@@ -282,6 +282,14 @@ class FFmpegGUI(QWidget):
         preset_layout.addWidget(self.preset_combo)
         # Set the 'slow' preset as default
         self.preset_combo.setCurrentIndex(4)
+
+        self.keyframe_interval_label = QLabel('Keyframe Interval')
+        self.keyframe_interval_spinbox = QSpinBox()
+        self.keyframe_interval_spinbox.setFixedWidth(64)
+        self.keyframe_interval_spinbox.setRange(1, 1000)
+        self.keyframe_interval_spinbox.setValue(250)
+        preset_layout.addWidget(self.keyframe_interval_label)
+        preset_layout.addWidget(self.keyframe_interval_spinbox)
 
         self.tune_grain = QCheckBox("grain retention")
         preset_layout.addWidget(self.tune_grain)
@@ -583,6 +591,7 @@ class FFmpegGUI(QWidget):
             ffmpeg_args["crf"] = crf
             ffmpeg_args["preset"] = preset
             ffmpeg_args["movflags"] = "faststart"
+            ffmpeg_args["g"] = self.keyframe_interval_spinbox.value()
             if self.tune_grain.isChecked():
                 ffmpeg_args["tune"] = "grain"
 
