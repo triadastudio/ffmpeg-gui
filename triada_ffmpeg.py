@@ -20,7 +20,7 @@ from PyQt5.QtGui import QTextCursor, QValidator
 
 import ffmpeg
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 
 class EncoderThread(QThread):
@@ -243,9 +243,11 @@ class FFmpegGUI(QWidget):
         audio_layout = QVBoxLayout(self.audio_frame)
         audio_layout.setContentsMargins(0, 0, 0, 0)
         self.audio_codec_combo = QComboBox()
+        self.audio_codec_combo.addItem("None")
         self.audio_codec_combo.addItem("AAC")
         self.audio_codec_combo.addItem("PCM 16-bit")
         self.audio_codec_combo.addItem("PCM 24-bit")
+        self.audio_codec_combo.setCurrentIndex(1)
         audio_layout.addWidget(QLabel('Audio Codec'))
         audio_layout.addWidget(self.audio_codec_combo)
 
@@ -594,13 +596,13 @@ class FFmpegGUI(QWidget):
             ffmpeg_args["g"] = self.keyframe_interval_spinbox.value()
             if self.tune_grain.isChecked():
                 ffmpeg_args["tune"] = "grain"
+            if codec == "libx265":
+                ffmpeg_args["vtag"] = "hvc1"
 
         elif codec == "prores_ks":
             ffmpeg_args["profile:v"] = self.get_prores_profile_index()
             ffmpeg_args["q:v"] = crf
             ffmpeg_args["vendor"] = "ap10"
-
-        audio_bitrate = self.audio_bitrate_input.value()
 
         frame_count = self.video_file_info['frame_count']
         video_file_has_audio = self.video_file_info['audio_stream_count'] > 0
@@ -648,12 +650,14 @@ class FFmpegGUI(QWidget):
             if not self.audio_direct_stream_copy.isChecked():
                 audio = audio.filter_('atrim', duration=video_duration)
 
-        if audio is not None:
-            audio_codec = 'copy' if self.audio_direct_stream_copy.isChecked() else (
-                'aac', 'pcm_s16le', 'pcm_s24le')[self.audio_codec_combo.currentIndex()]
+        audio_codecs = [None, 'aac', 'pcm_s16le', 'pcm_s24le']
+        audio_codec = 'copy' if self.audio_direct_stream_copy.isChecked(
+        ) else audio_codecs[self.audio_codec_combo.currentIndex()]
+
+        if audio is not None and audio_codec is not None:
             ffmpeg_args["acodec"] = audio_codec
             if audio_codec == 'aac':
-                ffmpeg_args["ab"] = f"{audio_bitrate}k"
+                ffmpeg_args["ab"] = f"{self.audio_bitrate_input.value()}k"
             output = ffmpeg.output(video, audio, output_file, **ffmpeg_args)
         else:
             output = ffmpeg.output(video, output_file, **ffmpeg_args)
