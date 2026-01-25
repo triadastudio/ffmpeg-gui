@@ -501,6 +501,7 @@ class FFmpegGUI(QWidget):
             duration = None
             audio_stream_count = 0
             is_rgb = False
+            video_codec = None
 
             # Check if the input is an image sequence
             if '%' in file_path:
@@ -513,10 +514,22 @@ class FFmpegGUI(QWidget):
                 streams = ffmpeg.probe(file_path)["streams"]
                 for stream in streams:
                     if stream['codec_type'] == 'video':
-                        pixel_format = stream['pix_fmt']
+                        pixel_format = stream.get('pix_fmt', '')
                         is_rgb = pixel_format == "rgb" or pixel_format == "gbrp"
-                        frame_count = int(stream['nb_frames'])
-                        duration = float(stream['duration'])
+                        frame_count = int(stream.get('nb_frames', 0))
+                        duration = float(stream.get('duration', 0))
+                        video_codec = stream.get('codec_name', '')
+
+                        # If frame_count is missing, calculate from duration and frame rate
+                        if frame_count == 0 and duration > 0:
+                            fps_str = stream.get('avg_frame_rate', stream.get('r_frame_rate', '0/1'))
+                            if '/' in fps_str:
+                                num, den = fps_str.split('/')
+                                fps = float(num) / float(den) if float(den) != 0 else 0
+                            else:
+                                fps = float(fps_str) if fps_str else 0
+                            if fps > 0:
+                                frame_count = int(duration * fps)
 
                     if stream['codec_type'] == 'audio':
                         audio_stream_count += 1
@@ -526,10 +539,17 @@ class FFmpegGUI(QWidget):
                 'duration': duration,
                 'audio_stream_count': audio_stream_count,
                 'is_rgb': is_rgb,
+                'video_codec': video_codec,
             }
 
         except (ffmpeg.Error, KeyError, StopIteration):
-            return None
+            return {
+                'frame_count': 0,
+                'duration': 0,
+                'audio_stream_count': 0,
+                'is_rgb': False,
+                'video_codec': None,
+            }
 
     def get_pixel_format_index(self):
         return next((i for i, button in enumerate(self.pixel_format_buttons)
@@ -555,6 +575,10 @@ class FFmpegGUI(QWidget):
         video_file = self.video_input.text()
 
         if not video_file:
+            return
+
+        if self.video_file_info is None:
+            QMessageBox.warning(self, "Error", "Could not read video file information. Please select a valid video file.")
             return
 
         output_file = os.path.join(self.output_folder_input.text(),
@@ -607,6 +631,7 @@ class FFmpegGUI(QWidget):
         frame_count = self.video_file_info['frame_count']
         video_file_has_audio = self.video_file_info['audio_stream_count'] > 0
         input_is_rgb = self.video_file_info['is_rgb']
+        input_video_codec = self.video_file_info.get('video_codec', '')
 
         audio = None
         if '%' in video_file:
@@ -615,7 +640,11 @@ class FFmpegGUI(QWidget):
                 video_file, format='image2', framerate=frame_rate)
             video_duration = frame_count / frame_rate
         else:
-            input_stream = ffmpeg.input(video_file)
+            # Use hardware decoding for AV1 files to avoid libaom-av1 compatibility issues
+            if input_video_codec == 'av1':
+                input_stream = ffmpeg.input(video_file, hwaccel='cuda', **{'c:v': 'av1_cuvid'})
+            else:
+                input_stream = ffmpeg.input(video_file)
             video_duration = self.video_file_info['duration']
             if video_file_has_audio:
                 audio = input_stream.audio
