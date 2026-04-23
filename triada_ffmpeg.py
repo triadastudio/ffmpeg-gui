@@ -523,11 +523,8 @@ class FFmpegGUI(QWidget):
                         # If frame_count is missing, calculate from duration and frame rate
                         if frame_count == 0 and duration > 0:
                             fps_str = stream.get('avg_frame_rate', stream.get('r_frame_rate', '0/1'))
-                            if '/' in fps_str:
-                                num, den = fps_str.split('/')
-                                fps = float(num) / float(den) if float(den) != 0 else 0
-                            else:
-                                fps = float(fps_str) if fps_str else 0
+                            num, den = fps_str.split('/')
+                            fps = float(num) / float(den) if float(den) != 0 else 0
                             if fps > 0:
                                 frame_count = int(duration * fps)
 
@@ -575,10 +572,6 @@ class FFmpegGUI(QWidget):
         video_file = self.video_input.text()
 
         if not video_file:
-            return
-
-        if self.video_file_info is None:
-            QMessageBox.warning(self, "Error", "Could not read video file information. Please select a valid video file.")
             return
 
         output_file = os.path.join(self.output_folder_input.text(),
