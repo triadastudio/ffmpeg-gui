@@ -640,7 +640,9 @@ class FFmpegGUI(QWidget):
                 input_stream = ffmpeg.input(video_file)
             video_duration = self.video_file_info['duration']
             if video_file_has_audio:
-                audio = input_stream.audio
+                # Map only the first audio stream to skip extras like iPhone
+                # spatial-audio tracks (APAC), which FFmpeg cannot decode.
+                audio = input_stream['a:0']
 
         video = input_stream.video
 
