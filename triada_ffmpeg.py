@@ -20,7 +20,7 @@ from PyQt5.QtGui import QTextCursor, QValidator
 
 import ffmpeg
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 
 
 class EncoderThread(QThread):
@@ -206,7 +206,7 @@ class FFmpegGUI(QWidget):
         pixel_format_layout.addWidget(QLabel('Pixel Format'))
 
         self.pixel_format_buttons = self.create_radio_button_group(
-            ['8-bit 4:2:0', '10-bit 4:2:0', '10-bit 4:2:2'],
+            ['8-bit 4:2:0', '10-bit 4:2:0', '10-bit 4:2:2', '10-bit 4:4:4'],
             default_index=1,
             layout=pixel_format_layout,
             callback=self.update_output_file_name)
@@ -406,7 +406,7 @@ class FFmpegGUI(QWidget):
                 )].text().lower()
             else:
                 container = "mp4"
-                pix_fmt_name = ('', '10bit', '10bit422')[self.get_pixel_format_index()]
+                pix_fmt_name = ('', '10bit', '10bit422', '10bit444')[self.get_pixel_format_index()]
             crf = self.crf_slider.value()
             output_file_name = (
                 f"{self.output_base_name} "
@@ -592,7 +592,7 @@ class FFmpegGUI(QWidget):
         if codec == "prores_ks":
             pix_fmt = 'yuv444p10' if self.get_prores_profile_index() >= 4 else 'yuv422p10'
         else:
-            pix_fmt = ('yuv420p', 'yuv420p10', 'yuv422p10')[self.get_pixel_format_index()]
+            pix_fmt = ('yuv420p', 'yuv420p10', 'yuv422p10', 'yuv444p10')[self.get_pixel_format_index()]
 
         colorspace = "bt709"
         preset = self.preset_combo.currentText()
