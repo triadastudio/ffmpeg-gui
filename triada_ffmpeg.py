@@ -20,7 +20,58 @@ from PyQt5.QtGui import QTextCursor, QValidator
 
 import ffmpeg
 
-VERSION = "0.4.3"
+VERSION = "0.4.4"
+
+# Colour names as ffprobe reports them, which zscale accepts as well
+ZSCALE_TRANSFERS = ('bt709', 'iec61966-2-1', 'smpte170m', 'smpte240m', 'linear', 'bt2020-10',
+                    'bt2020-12', 'smpte2084', 'arib-std-b67', 'iec61966-2-4', 'bt470m')
+ZSCALE_PRIMARIES = ('bt709', 'smpte170m', 'smpte240m', 'bt470bg', 'bt470m', 'film', 'bt2020',
+                    'smpte428', 'smpte431', 'smpte432')
+ZSCALE_MATRICES = ('bt709', 'smpte170m', 'bt470bg', 'bt2020nc', 'bt2020c', 'smpte240m', 'fcc')
+ZSCALE_FILTERS = {'bicubic': 'bicubic', 'lanczos': 'lanczos', 'spline': 'spline36'}
+
+
+def is_hd(width, height):
+    # Players that ignore colour tags assume BT.709 above SD sizes; unknown sizes count as HD
+    return height > 576 or width >= 1280 or not (width or height)
+
+
+def get_colour_conversion(file_info, matrix_mode, output_size):
+    # The output keeps the source transfer and primaries; in auto mode the matrix is the one
+    # players that ignore colour tags assume for the output size
+    if file_info['is_rgb']:
+        # Image sequences are sRGB renders
+        matrix_in, range_in, default_transfer = None, 'full', 'iec61966-2-1'
+    else:
+        matrix_in = file_info.get('color_space')
+        if matrix_in not in ZSCALE_MATRICES:
+            matrix_in = 'bt709' if is_hd(file_info['width'], file_info['height']) else 'smpte170m'
+        range_in = 'full' if file_info.get('color_range') == 'pc' else 'limited'
+        default_transfer = 'bt709'
+
+    transfer = file_info.get('color_transfer')
+    if transfer not in ZSCALE_TRANSFERS:
+        transfer = default_transfer
+    primaries = file_info.get('color_primaries')
+    if primaries not in ZSCALE_PRIMARIES:
+        primaries = 'bt709'
+
+    if matrix_mode == 'keep' and matrix_in:
+        matrix_out = matrix_in
+    elif matrix_in in ('bt2020nc', 'bt2020c'):
+        matrix_out = 'bt2020nc'
+    elif matrix_mode == 'bt709' or is_hd(*output_size):
+        matrix_out = 'bt709'
+    else:
+        matrix_out = 'smpte170m'
+
+    return {
+        'matrix_in': matrix_in,
+        'matrix_out': matrix_out,
+        'range_in': range_in,
+        'transfer': transfer,
+        'primaries': primaries,
+    }
 
 
 class EncoderThread(QThread):
@@ -238,6 +289,12 @@ class FFmpegGUI(QWidget):
         self.crf_slider.valueChanged.connect(self.update_crf_label)
         layout.addWidget(self.crf_slider)
         self.update_crf_label(self.crf_slider.value())
+
+        layout.addWidget(QLabel('Color Matrix'))
+        self.matrix_combo = QComboBox()
+        self.matrix_combo.addItems(
+            ['Auto: BT.709 for HD, BT.601 for SD', 'Keep source', 'Always BT.709'])
+        layout.addWidget(self.matrix_combo)
 
         self.audio_frame = QFrame()
         audio_layout = QVBoxLayout(self.audio_frame)
@@ -499,6 +556,9 @@ class FFmpegGUI(QWidget):
         try:
             frame_count = 0
             duration = None
+            fps = 0
+            width = height = 0
+            colors = {}
             audio_stream_count = 0
             is_rgb = False
             video_codec = None
@@ -510,23 +570,30 @@ class FFmpegGUI(QWidget):
                 # Count the number of matching files in the directory
                 frame_count = len(glob.glob(pattern))
                 is_rgb = True
+                first_image = sorted(glob.glob(pattern))[:1]
+                if first_image:
+                    image = ffmpeg.probe(first_image[0])['streams'][0]
+                    width, height = int(image.get('width', 0)), int(image.get('height', 0))
             else:
-                streams = ffmpeg.probe(file_path)["streams"]
-                for stream in streams:
+                probe = ffmpeg.probe(file_path)
+                for stream in probe["streams"]:
                     if stream['codec_type'] == 'video':
                         pixel_format = stream.get('pix_fmt', '')
-                        is_rgb = pixel_format == "rgb" or pixel_format == "gbrp"
+                        is_rgb = pixel_format.startswith(('rgb', 'bgr', 'gbr', 'argb', 'abgr'))
                         frame_count = int(stream.get('nb_frames', 0))
-                        duration = float(stream.get('duration', 0))
+                        # Matroska keeps the duration in the container only
+                        duration = float(stream.get('duration') or probe['format'].get('duration', 0))
                         video_codec = stream.get('codec_name', '')
+                        width, height = int(stream.get('width', 0)), int(stream.get('height', 0))
+                        colors = {key: stream.get(key) for key in
+                                  ('color_space', 'color_transfer', 'color_primaries', 'color_range')}
+                        fps_str = stream.get('avg_frame_rate', stream.get('r_frame_rate', '0/1'))
+                        num, den = fps_str.split('/')
+                        fps = float(num) / float(den) if float(den) != 0 else 0
 
                         # If frame_count is missing, calculate from duration and frame rate
-                        if frame_count == 0 and duration > 0:
-                            fps_str = stream.get('avg_frame_rate', stream.get('r_frame_rate', '0/1'))
-                            num, den = fps_str.split('/')
-                            fps = float(num) / float(den) if float(den) != 0 else 0
-                            if fps > 0:
-                                frame_count = int(duration * fps)
+                        if frame_count == 0 and duration > 0 and fps > 0:
+                            frame_count = int(duration * fps)
 
                     if stream['codec_type'] == 'audio':
                         audio_stream_count += 1
@@ -534,18 +601,25 @@ class FFmpegGUI(QWidget):
             return {
                 'frame_count': frame_count,
                 'duration': duration,
+                'fps': fps,
                 'audio_stream_count': audio_stream_count,
                 'is_rgb': is_rgb,
                 'video_codec': video_codec,
+                'width': width,
+                'height': height,
+                **colors,
             }
 
-        except (ffmpeg.Error, KeyError, StopIteration):
+        except (ffmpeg.Error, KeyError, StopIteration, ValueError):
             return {
                 'frame_count': 0,
                 'duration': 0,
+                'fps': 0,
                 'audio_stream_count': 0,
                 'is_rgb': False,
                 'video_codec': None,
+                'width': 0,
+                'height': 0,
             }
 
     def get_pixel_format_index(self):
@@ -555,6 +629,21 @@ class FFmpegGUI(QWidget):
     def get_prores_profile_index(self):
         return next((i for i, button in enumerate(self.prores_profile_buttons)
                      if button.isChecked()), "0")
+
+    def get_matrix_mode(self):
+        return ('auto', 'keep', 'bt709')[self.matrix_combo.currentIndex()]
+
+    def get_output_size(self):
+        width, height = self.resize_width.value(), self.resize_height.value()
+        source_width = self.video_file_info['width']
+        source_height = self.video_file_info['height']
+        if width > 0 and height == 0 and source_width:
+            height = round(source_height * width / source_width)
+        elif height > 0 and width == 0 and source_height:
+            width = round(source_width * height / source_height)
+        elif width == 0 and height == 0:
+            width, height = source_width, source_height
+        return width, height
 
     def check_file_overwrite(self, output_file):
         if os.path.exists(output_file):
@@ -594,15 +683,18 @@ class FFmpegGUI(QWidget):
         else:
             pix_fmt = ('yuv420p', 'yuv420p10', 'yuv422p10', 'yuv444p10')[self.get_pixel_format_index()]
 
-        colorspace = "bt709"
+        colour = get_colour_conversion(self.video_file_info, self.get_matrix_mode(),
+                                       self.get_output_size())
         preset = self.preset_combo.currentText()
 
         ffmpeg_args = {
             "vcodec": codec,
             "pix_fmt": pix_fmt,
-            "colorspace": colorspace,
-            "color_trc": colorspace,
-            "color_primaries": colorspace,
+            # Same as the filtered frames, otherwise FFmpeg 8 converts them once more
+            "colorspace": colour['matrix_out'],
+            "color_trc": colour['transfer'],
+            "color_primaries": colour['primaries'],
+            "color_range": "tv",
             "y": None  # force overwrite
         }
 
@@ -623,7 +715,6 @@ class FFmpegGUI(QWidget):
 
         frame_count = self.video_file_info['frame_count']
         video_file_has_audio = self.video_file_info['audio_stream_count'] > 0
-        input_is_rgb = self.video_file_info['is_rgb']
         input_video_codec = self.video_file_info.get('video_codec', '')
 
         audio = None
@@ -649,20 +740,28 @@ class FFmpegGUI(QWidget):
         resize_width = self.resize_width.value()
         resize_height = self.resize_height.value()
         resize_filter = self.resize_filter_combo.currentText()
+        resizing = resize_width > 0 or resize_height > 0
+        size_args = {}
+        if resizing:
+            size_args = {'w': resize_width if resize_width > 0 else -1,
+                         'h': resize_height if resize_height > 0 else -1}
 
-        if resize_width > 0 or resize_height > 0:
-            resize_width = resize_width if resize_width > 0 else -1
-            resize_height = resize_height if resize_height > 0 else -1
-
-            if input_is_rgb:
-                video = video.filter('scale', resize_width, resize_height, sws_flags=resize_filter,
-                                     in_color_matrix='bt601', out_color_matrix='bt709')
-            else:
-                video = video.filter(
-                    'scale', resize_width, resize_height, sws_flags=resize_filter)
-        elif input_is_rgb:
-            video = video.filter(
-                'scale', in_color_matrix='bt601', out_color_matrix='bt709')
+        zscale_args = {
+            'transferin': colour['transfer'],
+            'transfer': colour['transfer'],
+            'primariesin': colour['primaries'],
+            'primaries': colour['primaries'],
+            'rangein': colour['range_in'],
+            'range': 'limited',
+            'matrix': colour['matrix_out'],
+            # Also resamples the chroma for the matrix conversion
+            'filter': ZSCALE_FILTERS[resize_filter] if resizing else 'spline36',
+            'dither': 'error_diffusion',
+        }
+        if colour['matrix_in']:
+            zscale_args['matrixin'] = colour['matrix_in']
+        video = video.filter('zscale', **size_args, **zscale_args)
+        video = video.filter('format', pix_fmt)
 
         convert_frame_rate = self.convert_frame_rate_input.value()
 
