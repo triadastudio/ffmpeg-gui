@@ -11,16 +11,16 @@ import subprocess
 import glob
 
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
-from PyQt5.QtWidgets import QPushButton, QRadioButton, QSlider, QProgressBar
+from PyQt5.QtWidgets import QPushButton, QSlider, QProgressBar
 from PyQt5.QtWidgets import QFileDialog, QLabel, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox
 from PyQt5.QtWidgets import QGraphicsOpacityEffect, QTextEdit, QCheckBox, QMessageBox
-from PyQt5.QtWidgets import QButtonGroup, QFrame, QGridLayout
+from PyQt5.QtWidgets import QFrame, QGridLayout, QWIDGETSIZE_MAX
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QObject
 from PyQt5.QtGui import QTextCursor, QValidator
 
 import ffmpeg
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 # Colour names as ffprobe reports them, which zscale accepts as well
 ZSCALE_TRANSFERS = ('bt709', 'iec61966-2-1', 'smpte170m', 'smpte240m', 'linear', 'bt2020-10',
@@ -165,8 +165,9 @@ class FFmpegGUI(QWidget):
         self.resize(300, self.height())
 
         layout = QVBoxLayout()
+        self.form_labels = []
 
-        layout.addWidget(QLabel('Video or Image Sequence'))
+        input_form = self.add_section(layout, 'Input')
         self.video_input = DnDLineEdit()
         self.video_input.file_dropped.connect(self.select_video)
         self.video_input.editingFinished.connect(
@@ -176,74 +177,19 @@ class FFmpegGUI(QWidget):
         video_layout = QHBoxLayout()
         video_layout.addWidget(self.video_input)
         video_layout.addWidget(self.video_button)
-        layout.addLayout(video_layout)
+        self.add_row(input_form, 'File', video_layout)
 
-        self.frame_rate_label = QLabel('Frame Rate')
         self.frame_rate_input = QSpinBox()
+        self.frame_rate_input.setFixedWidth(64)
         # Set the minimum and maximum frame rate values
         self.frame_rate_input.setRange(1, 240)
         # Set the default frame rate value to 30
         self.frame_rate_input.setValue(30)
-        layout.addWidget(self.frame_rate_label)
-        layout.addWidget(self.frame_rate_input)
+        self.frame_rate_label = self.add_row(input_form, 'Frame Rate', self.frame_rate_input)
         # Set initially hidden until the image sequence is detected
         self.frame_rate_label.hide()
         self.frame_rate_input.hide()
 
-        layout.addWidget(QLabel('Audio Source (optional)'))
-        self.audio_input = DnDLineEdit()
-        self.audio_input.file_dropped.connect(self.select_audio)
-        self.audio_input.editingFinished.connect(
-            lambda: self.select_audio(self.audio_input.text()))
-        self.audio_button = QPushButton('Browse')
-        self.audio_button.clicked.connect(lambda: self.select_audio())
-        audio_layout = QHBoxLayout()
-        audio_layout.addWidget(self.audio_input)
-        audio_layout.addWidget(self.audio_button)
-        layout.addLayout(audio_layout)
-
-        layout.addWidget(QLabel('Resize'))
-        resize_layout = QHBoxLayout()
-        self.resize_width = QSpinBox()
-        self.resize_width.setFixedWidth(64)
-        self.resize_width.setRange(0, 8192)
-        self.resize_width.setSingleStep(8)
-        self.resize_width.setValue(0)
-        resize_layout.addWidget(self.resize_width)
-        resize_layout.addWidget(QLabel('x'))
-        self.resize_height = QSpinBox()
-        self.resize_height.setFixedWidth(64)
-        self.resize_height.setRange(0, 8192)
-        self.resize_height.setSingleStep(8)
-        self.resize_height.setValue(0)
-        resize_layout.addWidget(self.resize_height)
-        resize_layout.addStretch(1)
-        self.resize_width.valueChanged.connect(self.on_resize_changed)
-        self.resize_height.valueChanged.connect(self.on_resize_changed)
-        layout.addLayout(resize_layout)
-
-        self.resize_filter_label = QLabel('Resize Filter')
-        self.resize_filter_combo = QComboBox()
-        self.resize_filter_combo.addItem('bicubic')
-        self.resize_filter_combo.addItem('lanczos')
-        self.resize_filter_combo.addItem('spline')
-        # Set the default value to "lanczos"
-        self.resize_filter_combo.setCurrentText('lanczos')
-        layout.addWidget(self.resize_filter_label)
-        layout.addWidget(self.resize_filter_combo)
-
-        self.convert_frame_rate_label = QLabel('Convert Frame Rate')
-        self.convert_frame_rate_input = CustomDoubleSpinBox()
-        self.convert_frame_rate_input.setFixedWidth(64)
-        self.convert_frame_rate_input.setRange(0, 240)
-        self.convert_frame_rate_input.setDecimals(2)
-        self.convert_frame_rate_input.setSingleStep(1)
-        self.convert_frame_rate_input.setValue(0)
-        self.convert_frame_rate_input.setSpecialValueText("None")
-        layout.addWidget(self.convert_frame_rate_label)
-        layout.addWidget(self.convert_frame_rate_input)
-
-        self.duration_label = QLabel('Duration (s)')
         self.duration_input = CustomDoubleSpinBox()
         self.duration_input.setFixedWidth(64)
         self.duration_input.setRange(0, 86400)
@@ -251,87 +197,147 @@ class FFmpegGUI(QWidget):
         self.duration_input.setSingleStep(1)
         self.duration_input.setValue(0)
         self.duration_input.setSpecialValueText("Full")
-        layout.addWidget(self.duration_label)
-        layout.addWidget(self.duration_input)
+        self.duration_label = self.add_row(input_form, 'Duration (s)', self.duration_input)
 
-        layout.addWidget(QLabel('Codec'))
+        self.resize_width = QSpinBox()
+        self.resize_width.setFixedWidth(64)
+        self.resize_width.setRange(0, 8192)
+        self.resize_width.setSingleStep(8)
+        self.resize_width.setValue(0)
+        self.resize_height = QSpinBox()
+        self.resize_height.setFixedWidth(64)
+        self.resize_height.setRange(0, 8192)
+        self.resize_height.setSingleStep(8)
+        self.resize_height.setValue(0)
+        self.resize_filter_combo = QComboBox()
+        self.resize_filter_combo.addItem('bicubic')
+        self.resize_filter_combo.addItem('lanczos')
+        self.resize_filter_combo.addItem('spline')
+        # Set the default value to "lanczos"
+        self.resize_filter_combo.setCurrentText('lanczos')
+        self.resize_filter_combo.setToolTip('Resize filter')
+        resize_layout = QHBoxLayout()
+        resize_layout.addWidget(self.resize_width)
+        resize_layout.addWidget(QLabel('x'))
+        resize_layout.addWidget(self.resize_height)
+        resize_layout.addWidget(self.resize_filter_combo, 1)
+        self.resize_width.valueChanged.connect(self.on_resize_changed)
+        self.resize_height.valueChanged.connect(self.on_resize_changed)
+        self.add_row(input_form, 'Resize', resize_layout)
+
+        self.convert_frame_rate_input = CustomDoubleSpinBox()
+        self.convert_frame_rate_input.setFixedWidth(64)
+        self.convert_frame_rate_input.setRange(0, 240)
+        self.convert_frame_rate_input.setDecimals(2)
+        self.convert_frame_rate_input.setSingleStep(1)
+        self.convert_frame_rate_input.setValue(0)
+        self.convert_frame_rate_input.setSpecialValueText("None")
+        self.convert_frame_rate_label = self.add_row(
+            input_form, 'Convert FPS', self.convert_frame_rate_input)
+
+        video_form = self.add_section(layout, 'Video')
         self.codec_combo = QComboBox()
         self.codec_combo.addItems(['x264', 'x265', 'ProRes'])
-        layout.addWidget(self.codec_combo)
+        self.add_row(video_form, 'Codec', self.codec_combo)
         self.codec_combo.setCurrentIndex(1)  # Set the x265 codec as default
         self.codec_combo.currentIndexChanged.connect(self.on_codec_changed)
 
-        # x264/x265 pixel format radio buttons
-        self.pixel_format_frame = QFrame()
-        pixel_format_layout = QVBoxLayout(self.pixel_format_frame)
-        pixel_format_layout.setContentsMargins(0, 0, 0, 0)
-        pixel_format_layout.addWidget(QLabel('Pixel Format'))
-
-        self.pixel_format_buttons = self.create_radio_button_group(
-            ['8-bit 4:2:0', '10-bit 4:2:0', '10-bit 4:2:2', '10-bit 4:4:4'],
-            default_index=1,
-            layout=pixel_format_layout,
-            callback=self.update_output_file_name)
-
-        # ProRes profile radio buttons
-        self.prores_profile_frame = QFrame()
-        prores_profile_layout = QGridLayout(self.prores_profile_frame)
-        prores_profile_layout.addWidget(QLabel('Profile'), 0, 0, 1, -1)
-        prores_profile_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.prores_profile_buttons = self.create_radio_button_group(
-            ['proxy', 'lt', 'standart', 'hq', '4444', '4444hq'],
-            default_index=2,
-            layout=prores_profile_layout,
-            callback=self.update_output_file_name,
-            row_count=3)
-
-        # Add to main layout
-        layout.addWidget(self.pixel_format_frame)
-        layout.addWidget(self.prores_profile_frame)
+        # x264/x265 pixel formats or ProRes profiles, following the codec
+        self.pixel_format_combo = QComboBox()
+        self.pixel_format_combo.addItems(['8-bit 4:2:0', '10-bit 4:2:0', '10-bit 4:2:2', '10-bit 4:4:4'])
+        self.pixel_format_combo.setCurrentIndex(1)
+        self.pixel_format_combo.currentIndexChanged.connect(self.update_output_file_name)
+        self.prores_profile_combo = QComboBox()
+        self.prores_profile_combo.addItems(['proxy', 'lt', 'standart', 'hq', '4444', '4444hq'])
+        self.prores_profile_combo.setCurrentIndex(2)
+        self.prores_profile_combo.currentIndexChanged.connect(self.update_output_file_name)
+        format_layout = QHBoxLayout()
+        format_layout.addWidget(self.pixel_format_combo)
+        format_layout.addWidget(self.prores_profile_combo)
+        self.add_row(video_form, 'Format', format_layout)
 
         self.crf_label = QLabel()
-        layout.addWidget(self.crf_label)
+        self.crf_label.setFixedWidth(self.crf_label.fontMetrics().horizontalAdvance('00 '))
         self.crf_slider = QSlider(Qt.Horizontal)
         self.crf_slider.setRange(1, 32)
         self.crf_slider.setValue(16)
         self.crf_slider.setTickPosition(QSlider.TicksBelow)
         self.crf_slider.setTickInterval(1)
         self.crf_slider.valueChanged.connect(self.update_crf_label)
-        layout.addWidget(self.crf_slider)
+        crf_layout = QHBoxLayout()
+        crf_layout.addWidget(self.crf_label)
+        crf_layout.addWidget(self.crf_slider)
+        self.add_row(video_form, 'Quality (CRF)', crf_layout)
         self.update_crf_label(self.crf_slider.value())
 
-        layout.addWidget(QLabel('Color Matrix'))
         self.matrix_combo = QComboBox()
         self.matrix_combo.addItems(
             ['Auto: BT.709 for HD, BT.601 for SD', 'Keep source', 'Always BT.709'])
-        layout.addWidget(self.matrix_combo)
+        self.add_row(video_form, 'Color Matrix', self.matrix_combo)
 
-        self.audio_frame = QFrame()
-        audio_layout = QVBoxLayout(self.audio_frame)
-        audio_layout.setContentsMargins(0, 0, 0, 0)
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(
+            ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'])
+        preset_label = self.add_row(video_form, 'Preset', self.preset_combo)
+        # Set the 'slow' preset as default
+        self.preset_combo.setCurrentIndex(4)
+
+        self.tune_combo = QComboBox()
+        # grain keeps fine noise, animation suits flat colours such as ID passes
+        self.tune_combo.addItems(['none', 'grain', 'animation'])
+        self.anti_banding_noise = QCheckBox("anti-banding noise")
+        self.anti_banding_noise.toggled.connect(self.on_anti_banding_noise_toggled)
+        self.pixel_format_combo.currentIndexChanged.connect(self.update_anti_banding_noise_state)
+        tune_layout = QHBoxLayout()
+        tune_layout.addWidget(self.tune_combo, 1)
+        tune_layout.addWidget(self.anti_banding_noise)
+        tune_label = self.add_row(video_form, 'Tune', tune_layout)
+
+        self.noise_crf_hint = QLabel('noise fades above CRF 16')
+        video_form.addWidget(self.noise_crf_hint, video_form.rowCount(), 1)
+        self.crf_slider.valueChanged.connect(self.update_noise_crf_hint)
+
+        self.keyframe_interval_spinbox = QSpinBox()
+        self.keyframe_interval_spinbox.setFixedWidth(64)
+        self.keyframe_interval_spinbox.setRange(1, 1000)
+        self.keyframe_interval_spinbox.setValue(250)
+        self.keyframe_interval_label = self.add_row(
+            video_form, 'Keyframes', self.keyframe_interval_spinbox)
+
+        # x264/x265 only, disabled for ProRes
+        self.encoder_setting_widgets = [
+            preset_label, self.preset_combo, tune_label, self.tune_combo, self.anti_banding_noise,
+            self.keyframe_interval_label, self.keyframe_interval_spinbox]
+
+        audio_form = self.add_section(layout, 'Audio')
+        self.audio_input = DnDLineEdit()
+        self.audio_input.file_dropped.connect(self.select_audio)
+        self.audio_input.editingFinished.connect(
+            lambda: self.select_audio(self.audio_input.text()))
+        self.audio_button = QPushButton('Browse')
+        self.audio_button.clicked.connect(lambda: self.select_audio())
+        audio_source_layout = QHBoxLayout()
+        audio_source_layout.addWidget(self.audio_input)
+        audio_source_layout.addWidget(self.audio_button)
+        self.add_row(audio_form, 'Source', audio_source_layout)
+
         self.audio_codec_combo = QComboBox()
         self.audio_codec_combo.addItem("None")
         self.audio_codec_combo.addItem("AAC")
         self.audio_codec_combo.addItem("PCM 16-bit")
         self.audio_codec_combo.addItem("PCM 24-bit")
         self.audio_codec_combo.setCurrentIndex(1)
-        audio_layout.addWidget(QLabel('Audio Codec'))
-        audio_layout.addWidget(self.audio_codec_combo)
 
         self.audio_codec_combo.currentTextChanged.connect(
             lambda codec: self.audio_bitrate_input.setEnabled(codec == "AAC"))
 
-        audio_layout.addWidget(QLabel('Audio Bitrate (kbps)'))
         self.audio_bitrate_input = QSpinBox()
         self.audio_bitrate_input.setFixedWidth(64)
         self.audio_bitrate_input.setRange(32, 512)
         self.audio_bitrate_input.setSingleStep(64)
         self.audio_bitrate_input.setValue(320)
-        audio_layout.addWidget(self.audio_bitrate_input)
 
-        self.audio_direct_stream_copy = QCheckBox('direct stream copy')
-        audio_layout.addWidget(self.audio_direct_stream_copy)
+        self.audio_direct_stream_copy = QCheckBox('stream copy')
 
         self.audio_direct_stream_copy.stateChanged.connect(
             lambda state: (
@@ -340,60 +346,32 @@ class FFmpegGUI(QWidget):
             )
         )
 
-        layout.addWidget(self.audio_frame)
+        audio_codec_layout = QHBoxLayout()
+        audio_codec_layout.addWidget(self.audio_codec_combo, 1)
+        audio_codec_layout.addWidget(self.audio_bitrate_input)
+        audio_codec_layout.addWidget(QLabel('kbps'))
+        audio_codec_layout.addWidget(self.audio_direct_stream_copy)
+        self.add_row(audio_form, 'Codec', audio_codec_layout)
 
-        self.preset_frame = QFrame()
-        preset_layout = QVBoxLayout(self.preset_frame)
-        preset_layout.setContentsMargins(0, 0, 0, 0)
-        preset_layout.addWidget(QLabel('Preset'))
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItems(
-            ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'])
-        preset_layout.addWidget(self.preset_combo)
-        # Set the 'slow' preset as default
-        self.preset_combo.setCurrentIndex(4)
-
-        self.keyframe_interval_label = QLabel('Keyframe Interval')
-        self.keyframe_interval_spinbox = QSpinBox()
-        self.keyframe_interval_spinbox.setFixedWidth(64)
-        self.keyframe_interval_spinbox.setRange(1, 1000)
-        self.keyframe_interval_spinbox.setValue(250)
-        preset_layout.addWidget(self.keyframe_interval_label)
-        preset_layout.addWidget(self.keyframe_interval_spinbox)
-
-        preset_layout.addWidget(QLabel('Tune'))
-        self.tune_combo = QComboBox()
-        # grain keeps fine noise, animation suits flat colours such as ID passes
-        self.tune_combo.addItems(['none', 'grain', 'animation'])
-        preset_layout.addWidget(self.tune_combo)
-
-        self.anti_banding_noise = QCheckBox("anti-banding noise")
-        self.anti_banding_noise.toggled.connect(self.on_anti_banding_noise_toggled)
-        preset_layout.addWidget(self.anti_banding_noise)
-        for button in self.pixel_format_buttons:
-            button.toggled.connect(self.update_anti_banding_noise_state)
-
-        self.noise_crf_hint = QLabel('noise fades above CRF 16')
-        preset_layout.addWidget(self.noise_crf_hint)
-        self.crf_slider.valueChanged.connect(self.update_noise_crf_hint)
-
-        layout.addWidget(self.preset_frame)
-
-        layout.addWidget(QLabel('Output Folder'))
+        output_form = self.add_section(layout, 'Output')
         self.output_folder_input = QLineEdit()
         self.output_button = QPushButton('Browse')
         self.output_button.clicked.connect(self.select_output_folder)
         output_layout = QHBoxLayout()
         output_layout.addWidget(self.output_folder_input)
         output_layout.addWidget(self.output_button)
-        layout.addLayout(output_layout)
+        self.add_row(output_form, 'Folder', output_layout)
         default_output_folder = QStandardPaths.writableLocation(
             QStandardPaths.DocumentsLocation)
         self.output_folder_input.setText(default_output_folder)
 
-        layout.addWidget(QLabel('Output File'))
         self.output_file_input = QLineEdit()
-        layout.addWidget(self.output_file_input)
+        self.add_row(output_form, 'File', self.output_file_input)
+
+        # One label column across the sections
+        label_width = max(label.sizeHint().width() for label in self.form_labels)
+        for label in self.form_labels:
+            label.setFixedWidth(label_width)
 
         self.encode_button = QPushButton('Start')
         self.encode_button.setMinimumSize(0, 32)
@@ -430,28 +408,44 @@ class FFmpegGUI(QWidget):
         self.on_codec_changed(self.codec_combo.currentIndex())
         self.update_anti_banding_noise_state()
 
-    @staticmethod
-    def create_radio_button_group(labels, default_index, layout, callback, row_count=1):
-        button_group = QButtonGroup()
-        radio_buttons = []
+    def add_section(self, layout, title):
+        # A grid instead of QFormLayout, which keeps the spacing of hidden rows in Qt 5
+        form = QGridLayout()
+        form.setColumnStretch(1, 1)
+        header = QLabel(title)
+        font = header.font()
+        font.setBold(True)
+        header.setFont(font)
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(header)
+        header_layout.addWidget(line, 1)
+        layout.addLayout(header_layout)
+        layout.addLayout(form)
+        return form
 
-        for i, label in enumerate(labels):
-            radio_button = QRadioButton(label)
-            button_group.addButton(radio_button)
-            radio_button.toggled.connect(callback)
+    def add_row(self, form, text, field):
+        label = QLabel(text)
+        self.form_labels.append(label)
+        row = form.rowCount() if form.count() else 0
+        form.addWidget(label, row, 0)
+        if isinstance(field, QWidget):
+            form.addWidget(field, row, 1)
+        else:
+            form.addLayout(field, row, 1)
+        return label
 
-            if row_count > 1:
-                # Compute grid position
-                position = (i % row_count + 1, i // row_count)
-                layout.addWidget(radio_button, *position)
-            else:  # Default to vertical layout
-                layout.addWidget(radio_button)
-
-            radio_buttons.append(radio_button)
-
-        radio_buttons[default_index].setChecked(True)
-
-        return radio_buttons
+    def fit_height(self):
+        # Only the console output has a use for extra height
+        self.layout().activate()
+        if self.show_console_output_checkbox.isChecked():
+            self.setMinimumHeight(self.layout().minimumSize().height())
+            self.setMaximumHeight(QWIDGETSIZE_MAX)
+            self.resize(self.width(), max(self.height(), self.layout().sizeHint().height()))
+        else:
+            self.setFixedHeight(self.layout().sizeHint().height())
 
     def toggle_console_output(self, state):
         if state == Qt.Checked:
@@ -462,6 +456,7 @@ class FFmpegGUI(QWidget):
         else:
             self.console_output.hide()
             sys.stdout = self.original_stdout
+        self.fit_height()
 
     def append_to_console(self, text):
         self.console_output.moveCursor(QTextCursor.End)
@@ -484,8 +479,7 @@ class FFmpegGUI(QWidget):
             codec_name = self.codec_combo.currentText().lower()
             if codec_name == "prores":
                 container = "mov"
-                pix_fmt_name = self.prores_profile_buttons[self.get_prores_profile_index(
-                )].text().lower()
+                pix_fmt_name = self.prores_profile_combo.currentText().lower()
             else:
                 container = "mp4"
                 pix_fmt_name = ('', '10bit', '10bit422', '10bit444')[self.get_pixel_format_index()]
@@ -502,24 +496,23 @@ class FFmpegGUI(QWidget):
 
     def on_resize_changed(self):
         enable_filter = self.resize_width.value() > 0 or self.resize_height.value() > 0
-        self.resize_filter_label.setEnabled(enable_filter)
         self.resize_filter_combo.setEnabled(enable_filter)
         self.update_output_file_name()
 
     def on_codec_changed(self, index):
         codec = self.codec_combo.itemText(index).lower()
         if codec == 'x264' or codec == 'x265':
-            self.prores_profile_frame.hide()
-            self.pixel_format_frame.show()
-            if codec == 'x264':
-                self.pixel_format_buttons[0].setChecked(True)
-            else:
-                self.pixel_format_buttons[1].setChecked(True)
-            self.preset_frame.setEnabled(True)
+            self.prores_profile_combo.hide()
+            self.pixel_format_combo.show()
+            self.pixel_format_combo.setCurrentIndex(0 if codec == 'x264' else 1)
+            for widget in self.encoder_setting_widgets:
+                widget.setEnabled(True)
+            self.update_anti_banding_noise_state()
         elif codec == 'prores':
-            self.pixel_format_frame.hide()
-            self.prores_profile_frame.show()
-            self.preset_frame.setEnabled(False)
+            self.pixel_format_combo.hide()
+            self.prores_profile_combo.show()
+            for widget in self.encoder_setting_widgets:
+                widget.setEnabled(False)
         self.update_output_file_name()
 
     def anti_banding_noise_applies(self):
@@ -541,9 +534,10 @@ class FFmpegGUI(QWidget):
     def update_noise_crf_hint(self):
         self.noise_crf_hint.setVisible(self.anti_banding_noise_applies()
                                        and self.crf_slider.value() > 16)
+        self.fit_height()
 
     def update_crf_label(self, value):
-        self.crf_label.setText(f"Quality (CRF): {value}")
+        self.crf_label.setText(str(value))
         self.update_output_file_name()
 
     def select_video(self, video_file=None):
@@ -582,6 +576,7 @@ class FFmpegGUI(QWidget):
             self.video_input.setText(video_file)
             self.video_file_info = self.get_file_info(video_file)
             self.update_output_file_name()
+            self.fit_height()
 
     def select_audio(self, audio_file=None):
         if audio_file is None:
@@ -669,12 +664,10 @@ class FFmpegGUI(QWidget):
             }
 
     def get_pixel_format_index(self):
-        return next((i for i, button in enumerate(self.pixel_format_buttons)
-                     if button.isChecked()), "0")
+        return self.pixel_format_combo.currentIndex()
 
     def get_prores_profile_index(self):
-        return next((i for i, button in enumerate(self.prores_profile_buttons)
-                     if button.isChecked()), "0")
+        return self.prores_profile_combo.currentIndex()
 
     def get_matrix_mode(self):
         return ('auto', 'keep', 'bt709')[self.matrix_combo.currentIndex()]
