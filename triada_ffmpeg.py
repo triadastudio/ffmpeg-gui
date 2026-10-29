@@ -20,7 +20,7 @@ from PyQt5.QtGui import QTextCursor, QValidator
 
 import ffmpeg
 
-VERSION = "0.4.4"
+VERSION = "0.5.0"
 
 # Colour names as ffprobe reports them, which zscale accepts as well
 ZSCALE_TRANSFERS = ('bt709', 'iec61966-2-1', 'smpte170m', 'smpte240m', 'linear', 'bt2020-10',
@@ -243,6 +243,17 @@ class FFmpegGUI(QWidget):
         layout.addWidget(self.convert_frame_rate_label)
         layout.addWidget(self.convert_frame_rate_input)
 
+        self.duration_label = QLabel('Duration (s)')
+        self.duration_input = CustomDoubleSpinBox()
+        self.duration_input.setFixedWidth(64)
+        self.duration_input.setRange(0, 86400)
+        self.duration_input.setDecimals(2)
+        self.duration_input.setSingleStep(1)
+        self.duration_input.setValue(0)
+        self.duration_input.setSpecialValueText("Full")
+        layout.addWidget(self.duration_label)
+        layout.addWidget(self.duration_input)
+
         layout.addWidget(QLabel('Codec'))
         self.codec_combo = QComboBox()
         self.codec_combo.addItems(['x264', 'x265', 'ProRes'])
@@ -350,8 +361,21 @@ class FFmpegGUI(QWidget):
         preset_layout.addWidget(self.keyframe_interval_label)
         preset_layout.addWidget(self.keyframe_interval_spinbox)
 
-        self.tune_grain = QCheckBox("grain retention")
-        preset_layout.addWidget(self.tune_grain)
+        preset_layout.addWidget(QLabel('Tune'))
+        self.tune_combo = QComboBox()
+        # grain keeps fine noise, animation suits flat colours such as ID passes
+        self.tune_combo.addItems(['none', 'grain', 'animation'])
+        preset_layout.addWidget(self.tune_combo)
+
+        self.anti_banding_noise = QCheckBox("anti-banding noise")
+        self.anti_banding_noise.toggled.connect(self.on_anti_banding_noise_toggled)
+        preset_layout.addWidget(self.anti_banding_noise)
+        for button in self.pixel_format_buttons:
+            button.toggled.connect(self.update_anti_banding_noise_state)
+
+        self.noise_crf_hint = QLabel('noise fades above CRF 16')
+        preset_layout.addWidget(self.noise_crf_hint)
+        self.crf_slider.valueChanged.connect(self.update_noise_crf_hint)
 
         layout.addWidget(self.preset_frame)
 
@@ -404,6 +428,7 @@ class FFmpegGUI(QWidget):
 
         self.on_resize_changed()
         self.on_codec_changed(self.codec_combo.currentIndex())
+        self.update_anti_banding_noise_state()
 
     @staticmethod
     def create_radio_button_group(labels, default_index, layout, callback, row_count=1):
@@ -470,6 +495,7 @@ class FFmpegGUI(QWidget):
                 f"{size_prefix + '_' if size_prefix else ''}"
                 f"{codec_name}"
                 f"{'_' + pix_fmt_name if pix_fmt_name else ''}"
+                f"{'_noise' if self.anti_banding_noise_applies() else ''}"
                 f"_q{crf}.{container}"
             )
             self.output_file_input.setText(output_file_name)
@@ -495,6 +521,26 @@ class FFmpegGUI(QWidget):
             self.prores_profile_frame.show()
             self.preset_frame.setEnabled(False)
         self.update_output_file_name()
+
+    def anti_banding_noise_applies(self):
+        return (self.codec_combo.currentText() in ('x264', 'x265')
+                and self.get_pixel_format_index() == 0
+                and self.anti_banding_noise.isChecked())
+
+    def update_anti_banding_noise_state(self):
+        self.anti_banding_noise.setEnabled(self.get_pixel_format_index() == 0)
+        self.update_noise_crf_hint()
+
+    def on_anti_banding_noise_toggled(self, checked):
+        # Without grain tuning the encoder smooths the noise away
+        if checked:
+            self.tune_combo.setCurrentText('grain')
+        self.update_noise_crf_hint()
+        self.update_output_file_name()
+
+    def update_noise_crf_hint(self):
+        self.noise_crf_hint.setVisible(self.anti_banding_noise_applies()
+                                       and self.crf_slider.value() > 16)
 
     def update_crf_label(self, value):
         self.crf_label.setText(f"Quality (CRF): {value}")
@@ -703,8 +749,11 @@ class FFmpegGUI(QWidget):
             ffmpeg_args["preset"] = preset
             ffmpeg_args["movflags"] = "faststart"
             ffmpeg_args["g"] = self.keyframe_interval_spinbox.value()
-            if self.tune_grain.isChecked():
-                ffmpeg_args["tune"] = "grain"
+            tune = self.tune_combo.currentText()
+            if tune != 'none':
+                ffmpeg_args["tune"] = tune
+            if self.anti_banding_noise_applies():
+                ffmpeg_args[f"{codec[3:]}-params"] = "aq-mode=3"
             if codec == "libx265":
                 ffmpeg_args["vtag"] = "hvc1"
 
@@ -717,23 +766,34 @@ class FFmpegGUI(QWidget):
         video_file_has_audio = self.video_file_info['audio_stream_count'] > 0
         input_video_codec = self.video_file_info.get('video_codec', '')
 
+        duration = self.duration_input.value()
+        input_args = {'t': duration} if duration > 0 else {}
+
         audio = None
         if '%' in video_file:
             frame_rate = self.frame_rate_input.value()
             input_stream = ffmpeg.input(
-                video_file, format='image2', framerate=frame_rate)
+                video_file, format='image2', framerate=frame_rate, **input_args)
             video_duration = frame_count / frame_rate
+            fps = frame_rate
         else:
             # Use hardware decoding for AV1 files to avoid libaom-av1 compatibility issues
             if input_video_codec == 'av1':
-                input_stream = ffmpeg.input(video_file, hwaccel='cuda', **{'c:v': 'av1_cuvid'})
+                input_stream = ffmpeg.input(video_file, hwaccel='cuda', **{'c:v': 'av1_cuvid'},
+                                            **input_args)
             else:
-                input_stream = ffmpeg.input(video_file)
+                input_stream = ffmpeg.input(video_file, **input_args)
             video_duration = self.video_file_info['duration']
+            fps = self.video_file_info['fps']
             if video_file_has_audio:
                 # Map only the first audio stream to skip extras like iPhone
                 # spatial-audio tracks (APAC), which FFmpeg cannot decode.
                 audio = input_stream['a:0']
+
+        if duration > 0:
+            video_duration = min(video_duration, duration) if video_duration else duration
+            if fps > 0:
+                frame_count = round(video_duration * fps)
 
         video = input_stream.video
 
@@ -767,6 +827,10 @@ class FFmpegGUI(QWidget):
 
         if convert_frame_rate > 0:
             video = video.filter('fps',  fps=convert_frame_rate, round='near')
+
+        if self.anti_banding_noise_applies():
+            # +-1 luma step on the 8-bit frames, new every frame; even strengths darken
+            video = video.filter('noise', c0s=3, c0f='t+u')
 
         if audio_file:
             audio = ffmpeg.input(audio_file).audio
