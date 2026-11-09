@@ -9,6 +9,9 @@ import os
 import re
 import subprocess
 import glob
+import shutil
+import statistics
+import tempfile
 
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtWidgets import QPushButton, QSlider, QProgressBar
@@ -20,7 +23,13 @@ from PyQt5.QtGui import QTextCursor, QValidator
 
 import ffmpeg
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
+
+# libaom cpu-used per preset, veryfast to veryslow; its good-quality mode stops at 6
+AOM_CPU_USED = (6, 6, 6, 6, 5, 4, 3)
+# Frames sampled for the film grain estimate, which costs about 0.3 s per 1080p frame
+FILM_GRAIN_SAMPLES = 30
+TRACE_HEADERS_FIELD = re.compile(r'\] \d+\s+(\w+)(?:\[(\d+)\])?\s+[01]+ = (-?\d+)$')
 
 # Colour names as ffprobe reports them, which zscale accepts as well
 ZSCALE_TRANSFERS = ('bt709', 'iec61966-2-1', 'smpte170m', 'smpte240m', 'linear', 'bt2020-10',
@@ -74,16 +83,120 @@ def get_colour_conversion(file_info, matrix_mode, output_size):
     }
 
 
+def escape_aom_param(value):
+    # -aom-params splits on ':' and treats '\' and "'" as escapes
+    return value.replace('\\', '/').replace("'", "\\'").replace(':', '\\:')
+
+
+def parse_film_grain(path):
+    # The film grain parameters of every shown AV1 frame that sets them, read without decoding
+    log = subprocess.run(['ffmpeg', '-hide_banner', '-i', path, '-c', 'copy',
+                          '-bsf:v', 'trace_headers', '-f', 'null', '-'],
+                         capture_output=True, text=True, check=False).stderr
+    frames = []
+    for line in log.splitlines():
+        if line.endswith('] Frame Header'):
+            frames.append({})
+            continue
+        match = TRACE_HEADERS_FIELD.search(line)
+        if match and frames:
+            name, index, value = match.group(1), match.group(2), int(match.group(3))
+            if index is None:
+                frames[-1][name] = value
+            else:
+                frames[-1].setdefault(name, {})[int(index)] = value
+    return [grain for grain in frames if grain.get('show_frame', 1) and grain.get('apply_grain')
+            and grain.get('update_grain', 1)]
+
+
+def film_grain_points(grain, plane):
+    count = grain.get(f'num_{plane}_points', 0)
+    return [(grain[f'point_{plane}_value'][i], grain[f'point_{plane}_scaling'][i])
+            for i in range(count)]
+
+
+def film_grain_strength(grain, value):
+    points = film_grain_points(grain, 'y')
+    if not points:
+        return 0
+    if value <= points[0][0]:
+        return points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if value <= x1:
+            return y0 + (y1 - y0) * (value - x0) / (x1 - x0)
+    return points[-1][1]
+
+
+def pick_film_grain(frames):
+    # The estimate closest to the median luma strength; a whole estimate keeps its fields consistent
+    curves = [[film_grain_strength(grain, value) for value in range(0, 256, 8)] for grain in frames]
+    median = [statistics.median(curve[i] for curve in curves) for i in range(len(curves[0]))]
+    distances = [sum(abs(a - b) for a, b in zip(curve, median)) for curve in curves]
+    return frames[distances.index(min(distances))]
+
+
+def write_film_grain_table(path, grain):
+    # One libaom grain table entry for the whole encode; libaom moves the seed every frame
+    lag = grain['ar_coeff_lag']
+    count = 2 * lag * (lag + 1)
+
+    def coeffs(name, length):
+        values = grain.get(name, {})
+        return ' '.join(str(values.get(i, 128) - 128) for i in range(length))
+
+    def points(plane):
+        plane_points = film_grain_points(grain, plane)
+        return f'{len(plane_points)}' + ''.join(f' {x} {y}' for x, y in plane_points)
+
+    with open(path, 'w', encoding='ascii', newline='\n') as table:
+        table.write(
+            'filmgrn1\n'
+            f"E 0 {10 ** 15} 1 {grain['grain_seed']} 1\n"
+            f"\tp {lag} {grain['ar_coeff_shift_minus_6'] + 6} {grain['grain_scale_shift']} "
+            f"{grain['grain_scaling_minus_8'] + 8} {grain['chroma_scaling_from_luma']} "
+            f"{grain['overlap_flag']} {grain.get('cb_mult', 128)} {grain.get('cb_luma_mult', 192)} "
+            f"{grain.get('cb_offset', 256)} {grain.get('cr_mult', 128)} "
+            f"{grain.get('cr_luma_mult', 192)} {grain.get('cr_offset', 256)}\n"
+            f"\tsY {points('y')}\n\tsCb {points('cb')}\n\tsCr {points('cr')}\n"
+            f"\tcY {coeffs('ar_coeffs_y_plus_128', count)}\n"
+            f"\tcCb {coeffs('ar_coeffs_cb_plus_128', count + 1)}\n"
+            f"\tcCr {coeffs('ar_coeffs_cr_plus_128', count + 1)}\n")
+
+
 class EncoderThread(QThread):
     progress = pyqtSignal(int)
 
-    def __init__(self, cmd):
+    def __init__(self, cmd, film_grain=None):
         super().__init__()
         self.cmd = cmd
+        # Estimate pass for an AV1 grain table: command, sampled frame step, output, table
+        self.film_grain = film_grain
         self.stop_flag = False
 
     def run(self):
-        process = subprocess.Popen(self.cmd,
+        try:
+            if self.film_grain is None or self.prepare_film_grain():
+                self.run_ffmpeg(self.cmd)
+        finally:
+            if self.film_grain is not None:
+                shutil.rmtree(os.path.dirname(self.film_grain['table']), ignore_errors=True)
+
+    def prepare_film_grain(self):
+        step = self.film_grain['step']
+        print(f"Estimating the film grain on 1 of every {step} frames")
+        if not self.run_ffmpeg(self.film_grain['cmd'], step):
+            return False
+        frames = parse_film_grain(self.film_grain['output'])
+        if not frames:
+            print("No film grain found, encoding without it")
+            index = self.cmd.index('-aom-params')
+            del self.cmd[index:index + 2]
+            return True
+        write_film_grain_table(self.film_grain['table'], pick_film_grain(frames))
+        return True
+
+    def run_ffmpeg(self, cmd, frame_step=1):
+        process = subprocess.Popen(cmd,
                                    stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
@@ -96,7 +209,7 @@ class EncoderThread(QThread):
 
             if progress_match:
                 frame_number = int(progress_match.group(1))
-                self.progress.emit(frame_number)
+                self.progress.emit(frame_number * frame_step)
 
             if self.stop_flag:  # check stop flag
                 process.stdin.write('q')  # send "q" keypress to stop
@@ -104,6 +217,7 @@ class EncoderThread(QThread):
                 break
 
         process.wait()
+        return process.returncode == 0 and not self.stop_flag
 
     def stop(self):
         self.stop_flag = True
@@ -237,12 +351,12 @@ class FFmpegGUI(QWidget):
 
         video_form = self.add_section(layout, 'Video')
         self.codec_combo = QComboBox()
-        self.codec_combo.addItems(['x264', 'x265', 'ProRes'])
+        self.codec_combo.addItems(['x264', 'x265', 'AV1', 'ProRes'])
         self.add_row(video_form, 'Codec', self.codec_combo)
         self.codec_combo.setCurrentIndex(1)  # Set the x265 codec as default
         self.codec_combo.currentIndexChanged.connect(self.on_codec_changed)
 
-        # x264/x265 pixel formats or ProRes profiles, following the codec
+        # x264/x265/AV1 pixel formats or ProRes profiles, following the codec
         self.pixel_format_combo = QComboBox()
         self.pixel_format_combo.addItems(['8-bit 4:2:0', '10-bit 4:2:0', '10-bit 4:2:2', '10-bit 4:4:4'])
         self.pixel_format_combo.setCurrentIndex(1)
@@ -304,7 +418,7 @@ class FFmpegGUI(QWidget):
         self.keyframe_interval_label = self.add_row(
             video_form, 'Keyframes', self.keyframe_interval_spinbox)
 
-        # x264/x265 only, disabled for ProRes
+        # Disabled for ProRes
         self.encoder_setting_widgets = [
             preset_label, self.preset_combo, tune_label, self.tune_combo, self.anti_banding_noise,
             self.keyframe_interval_label, self.keyframe_interval_spinbox]
@@ -501,12 +615,17 @@ class FFmpegGUI(QWidget):
 
     def on_codec_changed(self, index):
         codec = self.codec_combo.itemText(index).lower()
-        if codec == 'x264' or codec == 'x265':
+        if codec in ('x264', 'x265', 'av1'):
             self.prores_profile_combo.hide()
             self.pixel_format_combo.show()
             self.pixel_format_combo.setCurrentIndex(0 if codec == 'x264' else 1)
             for widget in self.encoder_setting_widgets:
                 widget.setEnabled(True)
+            # AV1 grain is film grain synthesis, libaom has no animation tuning
+            animation_index = self.tune_combo.findText('animation')
+            self.tune_combo.model().item(animation_index).setEnabled(codec != 'av1')
+            if codec == 'av1' and self.tune_combo.currentIndex() == animation_index:
+                self.tune_combo.setCurrentText('none')
             self.update_anti_banding_noise_state()
         elif codec == 'prores':
             self.pixel_format_combo.hide()
@@ -521,7 +640,8 @@ class FFmpegGUI(QWidget):
                 and self.anti_banding_noise.isChecked())
 
     def update_anti_banding_noise_state(self):
-        self.anti_banding_noise.setEnabled(self.get_pixel_format_index() == 0)
+        self.anti_banding_noise.setEnabled(self.codec_combo.currentText() in ('x264', 'x265')
+                                           and self.get_pixel_format_index() == 0)
         self.update_noise_crf_hint()
 
     def on_anti_banding_noise_toggled(self, checked):
@@ -714,6 +834,7 @@ class FFmpegGUI(QWidget):
         codec = {
             "x264": "libx264",
             "x265": "libx265",
+            "AV1": "libaom-av1",
             "ProRes": "prores_ks"
         }[self.codec_combo.currentText()]
 
@@ -736,6 +857,7 @@ class FFmpegGUI(QWidget):
             "color_range": "tv",
             "y": None  # force overwrite
         }
+        film_grain_table = None
 
         if codec == "libx264" or codec == "libx265":
             ffmpeg_args["crf"] = crf
@@ -749,6 +871,21 @@ class FFmpegGUI(QWidget):
                 ffmpeg_args[f"{codec[3:]}-params"] = "aq-mode=3"
             if codec == "libx265":
                 ffmpeg_args["vtag"] = "hvc1"
+
+        elif codec == "libaom-av1":
+            ffmpeg_args["crf"] = crf
+            ffmpeg_args["cpu-used"] = AOM_CPU_USED[self.preset_combo.currentIndex()]
+            # Encodes the four tiles of a frame in parallel, 1.7x faster at the same quality
+            ffmpeg_args["tiles"] = "2x2"
+            ffmpeg_args["movflags"] = "faststart"
+            ffmpeg_args["g"] = self.keyframe_interval_spinbox.value()
+            if self.tune_combo.currentText() == 'grain':
+                # Players add the grain back from a table, as AV1 smooths it away even at CRF 8.
+                # Estimating it on every frame is 6x slower, so a sample pass fills the table
+                film_grain_dir = tempfile.mkdtemp(prefix='triada_ffmpeg_grain_')
+                film_grain_table = os.path.join(film_grain_dir, 'grain.tbl')
+                ffmpeg_args["aom-params"] = (
+                    "film-grain-table=" + escape_aom_param(film_grain_table))
 
         elif codec == "prores_ks":
             ffmpeg_args["profile:v"] = self.get_prores_profile_index()
@@ -825,6 +962,20 @@ class FFmpegGUI(QWidget):
             # +-1 luma step on the 8-bit frames, new every frame; even strengths darken
             video = video.filter('noise', c0s=3, c0f='t+u')
 
+        film_grain = None
+        if film_grain_table:
+            step = max(1, frame_count // FILM_GRAIN_SAMPLES) if frame_count else 60
+            estimate_output = os.path.join(os.path.dirname(film_grain_table), 'estimate.mkv')
+            # Level 8 matches the dither of the iPhone recordings; without denoising the
+            # estimate describes the grain the frames have
+            estimate_args = {**ffmpeg_args, 'cpu-used': 6, 'denoise-noise-level': 8,
+                             'aom-params': 'enable-dnl-denoising=0', 'fps_mode': 'passthrough'}
+            del estimate_args['movflags']
+            estimate = ffmpeg.output(video.filter('framestep', step), estimate_output,
+                                     **estimate_args)
+            film_grain = {'cmd': ffmpeg.compile(estimate), 'step': step,
+                          'output': estimate_output, 'table': film_grain_table}
+
         if audio_file:
             audio = ffmpeg.input(audio_file).audio
             if not self.audio_direct_stream_copy.isChecked():
@@ -845,9 +996,11 @@ class FFmpegGUI(QWidget):
         try:
             cmd = ffmpeg.compile(output)
 
+            if film_grain:
+                print("FFmpeg film grain estimate command:", " ".join(film_grain['cmd']))
             print("FFmpeg command:", " ".join(cmd))
 
-            self.encoder_thread = EncoderThread(cmd)
+            self.encoder_thread = EncoderThread(cmd, film_grain)
             self.encoder_thread.progress.connect(self.update_progress)
             self.encoder_thread.finished.connect(self.encoding_finished)
 
